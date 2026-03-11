@@ -1,5 +1,7 @@
 # hostrada4py
-hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data from the DWD (Deutscher Wertterdienst))
+hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data from the DWD (Deutscher Wetterdienst)
+
+![Berlin_UHI_HOSTRADA](https://github.com/UdK-VPT/hostrada4py/blob/main/img/Berlin_UHI_HOSTRADA.png)
 
 ## The HOSTRADA project of DWD
 The high-resolution hourly grid data set (HOSTRADA) for Germany published by DWD is a climatological reference data set. With a spatial resolution of one square kilometer and a temporal resolution of one hour, it provides a wide range of meteorological parameters for the land surfaces of the Federal Republic of Germany since 1995.
