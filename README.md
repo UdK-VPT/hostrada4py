@@ -25,7 +25,9 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 * Incoming and outgoing terrestrial heat radiation
 
 ## The Python library hostrada4py
-The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. hostrada.py contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in hostradaPoint.py support the evaluation of weather data at a climate location specified by longitude and latitude, whereas hostradaArea.py provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon. 
+The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. hostrada.py contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in hostradaPoint.py support the evaluation of weather data at a climate location specified by longitude and latitude, whereas hostradaArea.py provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
+
+For the largest 50 German cities polygons are predefind in the file hostrada4py/hostradaCities.py.
 
 ## Notebooks
 The notebooks hostradaPoint.ipynb and hostradaArea.ipynb illustrate the use of the Python functions of hostrada4py.
