@@ -4,15 +4,15 @@
 """
 hostradaPoint.py reads hourly HOSTRADA values for a specific 1 km x 1 km grid.
 
-Funktionen:
-- Eingabe einer Position als Lon/Lat (WGS84, EPSG:4326)
-- Transformation nach HOSTRADA-Projektion EPSG:3034
-- Herunterladen der benötigten monatlichen NetCDF-Dateien vom DWD
-- Auswahl des nächstgelegenen 1-km-Rasterpunkts
-- Ausgabe der stündlichen HOSTRADA-Werte als CSV
+Features:
+- Enter a location as longitude/latitude (WGS84, EPSG:4326)
+- Transform to HOSTRADA projection (EPSG:3034)
+- Download the required monthly NetCDF files from the DWD
+- Select the nearest 1-km grid point
+- Export hourly HOSTRADA values as a CSV file
 
-Voraussetzungen:
-    pip install calendar pathlib typing numpy pandas requests xarray pyproj  
+Required installations:
+    pip install calendar numpy pandas requests xarray pyproj  
 """
 
 from __future__ import annotations
@@ -30,14 +30,14 @@ CACHE_DIR = Path("hostrada_cache")
 
 def normalize_time_index(ds: xr.Dataset) -> xr.Dataset:
     if "time" not in ds.coords and "time" not in ds.dims:
-        raise KeyError("Keine 'time'-Koordinate in der NetCDF-Datei gefunden.")
+        raise KeyError("No ‘time’ coordinate found in the NetCDF file.")
     return ds
 
 def find_xy_dim_names(ds: xr.Dataset, var_name: str) -> Tuple[str, str]:
     """
-    Liefert die echten Raumdimensionen der Datenvariable.
-    Erwartet typischerweise ('time', 'Y', 'X') oder ('time', 'y', 'x').
-    Rückgabe: (x_dim, y_dim)
+    Returns the actual spatial dimensions of the data variable.
+    Typically expects (‘time’, ‘Y’, ‘X’) or (‘time’, ‘y’, ‘x’).
+    Returns: (x_dim, y_dim)
     """
     dims = ds[var_name].dims
 
@@ -45,7 +45,7 @@ def find_xy_dim_names(ds: xr.Dataset, var_name: str) -> Tuple[str, str]:
 
     if len(spatial_dims) != 2:
         raise KeyError(
-            f"Erwarte genau 2 Raumdimensionen neben 'time', gefunden: {dims}"
+            f"Expected exactly 2 spatial dimensions in addition to ‘time’, found: {dims}"
         )
 
     y_candidates = [d for d in spatial_dims if d.lower() == "y"]
@@ -60,11 +60,11 @@ def find_xy_dim_names(ds: xr.Dataset, var_name: str) -> Tuple[str, str]:
 
 def get_xy_axis_values(ds: xr.Dataset, x_dim: str, y_dim: str) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Holt die 1D-Achsenwerte der Raumdimensionen.
+    Retrieve the 1D axis values for the room dimensions.
     """
     if x_dim not in ds.coords or y_dim not in ds.coords:
         raise KeyError(
-            f"Raumdimensionen nicht als 1D-Koordinaten vorhanden. "
+            f"Spatial dimensions are not available as 1D coordinates.. "
             f"x_dim={x_dim}, y_dim={y_dim}, coords={list(ds.coords)}"
         )
 
@@ -73,7 +73,7 @@ def get_xy_axis_values(ds: xr.Dataset, x_dim: str, y_dim: str) -> Tuple[np.ndarr
 
     if x_vals.ndim != 1 or y_vals.ndim != 1:
         raise ValueError(
-            f"Erwarte 1D-Achsenkoordinaten. "
+            f"Expect 1D axis coordinates. "
             f"{x_dim}.ndim={x_vals.ndim}, {y_dim}.ndim={y_vals.ndim}"
         )
 
@@ -104,14 +104,14 @@ def extract_from_dataset(
 
     x3034, y3034 = transform_lonlat_to_epsg3034(lon, lat)
 
-    # nächstgelegenen Rasterindex bestimmen
+    # Determine the nearest grid index
     ix = int(np.abs(x_vals - x3034).argmin())
     iy = int(np.abs(y_vals - y3034).argmin())
 
-    # Auswahl über echte Raumdimensionen
+    # Selection based on actual room dimensions
     da = ds[var_name].isel({x_dim: ix, y_dim: iy})
 
-    # Zeitfenster zuschneiden
+    # Crop the time window
     start_naive = pd.Timestamp(start).tz_localize(None)
     end_naive = pd.Timestamp(end).tz_localize(None)
     da = da.sel(time=slice(start_naive, end_naive))
@@ -125,7 +125,7 @@ def extract_from_dataset(
     df["grid_x_epsg3034"] = selected_x
     df["grid_y_epsg3034"] = selected_y
 
-    # falls vorhanden: 2D lon/lat am selektierten Rasterpunkt mitgeben
+    # If available: Include 2D longitude and latitude at the selected grid point
     if "lon" in ds.coords and set(ds["lon"].dims) == {y_dim, x_dim}:
         df["grid_lon"] = float(ds["lon"].isel({y_dim: iy, x_dim: ix}).values)
 
@@ -163,10 +163,10 @@ def extract_values_for_point(
         url = hs.hostrada_url(var, year, month)
         target = cache_dir / filename
 
-        print(f"Lade: {url}")
+        print(f"Load: {url}")
         hs.download_file(url, target)
 
-        print(f"Lese: {target}")
+        print(f"Read: {target}")
         with hs.read_month_file(target) as ds:
             df = extract_from_dataset(var, ds, lon, lat, start_ts, end_ts)
             monthly_frames.append(df)
