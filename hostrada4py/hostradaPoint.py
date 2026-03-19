@@ -94,7 +94,7 @@ def extract_from_dataset(
 ) -> pd.DataFrame:
     ds = normalize_time_index(ds)
 
-    if var in ["tas", "uhi", "sfcWinds", "sfcWindd", "rsds", "clt", "hurs", "tdew"]:
+    if var in ["tas", "uhi", "sfcWind", "sfcWind_direction", "rsds", "clt", "hurs", "tdew"]:
         var_name = hs.find_variable(var, ds)
     else:
         print("unknown variable")

@@ -16,8 +16,8 @@ from typing import Iterable, List, Tuple
 
 BASE_URLS = {"tas":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/air_temperature_mean",
              "uhi":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/urban_heat_island_intensity",
-             "sfcWinds":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/wind_speed",
-             "sfcWindd":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/wind_direction",
+             "sfcWind":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/wind_speed",
+             "sfcWind_direction":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/wind_direction",
              "rsds":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/radiation_downwelling",
              "clt":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/cloud_cover",
              "hurs":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/humidity_relative",
@@ -25,8 +25,8 @@ BASE_URLS = {"tas":"https://opendata.dwd.de/climate_environment/CDC/grids_german
 
 FILE_PREFIXS = {"tas":"tas_1hr_HOSTRADA-v1-0_BE_gn",
                 "uhi":"uhi_1hr_HOSTRADA-v1-0_BE_gn",
-                "sfcWinds":"sfcWind_1hr_HOSTRADA-v1-0_BE_gn",
-                "sfcWindd":"sfcWind_direction_1hr_HOSTRADA-v1-0_BE_gn",
+                "sfcWind":"sfcWind_1hr_HOSTRADA-v1-0_BE_gn",
+                "sfcWind_direction":"sfcWind_direction_1hr_HOSTRADA-v1-0_BE_gn",
                 "rsds":"rsds_1hr_HOSTRADA-v1-0_BE_gn",
                 "clt":"clt_1hr_HOSTRADA-v1-0_BE_gn",
                 "hurs":"hurs_1hr_HOSTRADA-v1-0_BE_gn",
