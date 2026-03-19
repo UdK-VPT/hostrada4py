@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Rough bounding polygons for the 50 largest cities in Germany (and in addition the cities Speyer and Korbach).
+"""Rough bounding polygons for the 50 largest cities in Germany (and in addition the smaller cities Speyer and Korbach).
 
 Format:
     [(longitude, latitude), ...]
@@ -499,7 +499,7 @@ CITY_POLYGONS = {
         (7.68, 51.63),
         (7.70, 51.67),
     ],
-    "Oldenburg (Oldb)": [
+    "Oldenburg": [
         (8.13, 53.17),
         (8.20, 53.20),
         (8.34, 53.19),
@@ -587,7 +587,7 @@ CITY_POLYGONS = {
     ],
 }
 
-# Bequeme Einzelvariablen
+# Variables for easier access
 berlin_polygon = CITY_POLYGONS["Berlin"]
 hamburg_polygon = CITY_POLYGONS["Hamburg"]
 muenchen_polygon = CITY_POLYGONS["München"]
@@ -632,7 +632,7 @@ hagen_polygon = CITY_POLYGONS["Hagen"]
 potsdam_polygon = CITY_POLYGONS["Potsdam"]
 saarbruecken_polygon = CITY_POLYGONS["Saarbrücken"]
 hamm_polygon = CITY_POLYGONS["Hamm"]
-oldenburg_oldb_polygon = CITY_POLYGONS["Oldenburg (Oldb)"]
+oldenburg_polygon = CITY_POLYGONS["Oldenburg"]
 ludwigshafen_am_rhein_polygon = CITY_POLYGONS["Ludwigshafen am Rhein"]
 muelheim_an_der_ruhr_polygon = CITY_POLYGONS["Mülheim an der Ruhr"]
 leverkusen_polygon = CITY_POLYGONS["Leverkusen"]

@@ -12,7 +12,7 @@ Features:
 - Export hourly HOSTRADA values as a CSV file
 
 Required installations:
-    pip install calendar numpy pandas requests xarray pyproj  
+    pip install numpy pandas requests xarray pyproj  
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def extract_from_dataset(
 ) -> pd.DataFrame:
     ds = normalize_time_index(ds)
 
-    if var in ["tas", "uhi", "sfcWind", "rsds", "clt", "hurs", "tdew"]:
+    if var in ["tas", "uhi", "sfcWinds", "sfcWindd", "rsds", "clt", "hurs", "tdew"]:
         var_name = hs.find_variable(var, ds)
     else:
         print("unknown variable")
