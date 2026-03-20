@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Rough bounding polygons for selcted regions in Germany.
+"""Rough bounding polygons for selected regions in Germany.
 
 Format:
     [(longitude, latitude), ...]
