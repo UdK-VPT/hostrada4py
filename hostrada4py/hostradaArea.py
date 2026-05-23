@@ -308,6 +308,142 @@ def extract_values_for_polygon(
     return pd.DataFrame(result.drop(columns="geometry"))
 
 
+def extract_mean_values_for_polygon(
+    var: str,
+    polygon_lonlat: Sequence[Tuple[float, float]],
+    start_utc: str,
+    end_utc: str,
+    cache_dir: Path = CACHE_DIR,
+    selection_mode: str = "within",
+    return_geodataframe: bool = True,
+    mean_column: Optional[str] = None,
+    include_statistics: bool = True,
+) -> gpd.GeoDataFrame | pd.DataFrame:
+    """
+    Calculates spatially resolved temporal mean values for all 1-km cells inside
+    a polygon over a given UTC time period.
+
+    The result contains one row per selected grid cell. By default, the temporal
+    mean is written back into the HOSTRADA value column. If a separate column
+    name is desired, set mean_column, e.g. mean_column="tas_mean".
+
+    Parameters:
+    - var: HOSTRADA variable or alias, e.g. "tas"
+    - polygon_lonlat: Polygon vertices as (lon, lat) points in EPSG:4326
+    - start_utc / end_utc: UTC period boundaries, inclusive
+    - cache_dir: Directory for downloaded HOSTRADA files
+    - selection_mode: "within", "intersects", or "centroid"
+    - return_geodataframe: If True, returns a GeoDataFrame with cell geometry
+    - mean_column: Optional output column name for the temporal mean
+    - include_statistics: Adds min/max/std and non-null time_count per cell
+
+    Output:
+    - One row per 1-km cell
+    - Per cell: temporal mean over the period, cell center coordinates,
+      selection mode, period start/end, and geometry when return_geodataframe=True
+    """
+    values = extract_values_for_polygon(
+        var=var,
+        polygon_lonlat=polygon_lonlat,
+        start_utc=start_utc,
+        end_utc=end_utc,
+        cache_dir=cache_dir,
+        selection_mode=selection_mode,
+        return_geodataframe=True,
+    )
+
+    if values.empty:
+        value_col = mean_column or var
+        columns = [
+            "time",
+            "grid_x_epsg3034",
+            "grid_y_epsg3034",
+            value_col,
+            "time_start",
+            "time_end",
+            "time_count",
+            "selection_mode",
+            "geometry",
+        ]
+        if include_statistics:
+            columns[4:4] = [
+                f"{var}_min",
+                f"{var}_max",
+                f"{var}_std",
+            ]
+        empty = gpd.GeoDataFrame(columns=columns, geometry="geometry", crs="EPSG:3034")
+        if return_geodataframe:
+            return empty
+        return pd.DataFrame(empty.drop(columns="geometry"))
+
+    values = values.copy()
+
+    if var in values.columns:
+        value_col = var
+    else:
+        metadata_cols = {
+            "time",
+            "grid_x_epsg3034",
+            "grid_y_epsg3034",
+            "grid_lon",
+            "grid_lat",
+            "selection_mode",
+            "geometry",
+        }
+        value_candidates = [
+            col for col in values.columns
+            if col not in metadata_cols and pd.api.types.is_numeric_dtype(values[col])
+        ]
+        if len(value_candidates) != 1:
+            raise KeyError(
+                f"Value column for var='{var}' could not be determined. "
+                f"Candidates: {value_candidates}"
+            )
+        value_col = value_candidates[0]
+
+    output_mean_col = mean_column or value_col
+    values[value_col] = pd.to_numeric(values[value_col], errors="coerce")
+    values["time"] = pd.to_datetime(values["time"], utc=True, errors="coerce").dt.tz_localize(None)
+
+    group_cols = ["grid_x_epsg3034", "grid_y_epsg3034"]
+    agg_map = {
+        output_mean_col: (value_col, "mean"),
+        "time": ("time", "max"),
+        "time_start": ("time", "min"),
+        "time_end": ("time", "max"),
+        "time_count": (value_col, "count"),
+        "selection_mode": ("selection_mode", "first"),
+    }
+
+    if include_statistics:
+        agg_map.update({
+            f"{value_col}_min": (value_col, "min"),
+            f"{value_col}_max": (value_col, "max"),
+            f"{value_col}_std": (value_col, "std"),
+        })
+
+    if "grid_lon" in values.columns:
+        agg_map["grid_lon"] = ("grid_lon", "first")
+    if "grid_lat" in values.columns:
+        agg_map["grid_lat"] = ("grid_lat", "first")
+    if "geometry" in values.columns:
+        agg_map["geometry"] = ("geometry", "first")
+
+    result = (
+        values.groupby(group_cols, as_index=False)
+        .agg(**agg_map)
+        .sort_values(["grid_y_epsg3034", "grid_x_epsg3034"])
+        .reset_index(drop=True)
+    )
+
+    if return_geodataframe:
+        return gpd.GeoDataFrame(result, geometry="geometry", crs="EPSG:3034")
+
+    if "geometry" in result.columns:
+        result = result.drop(columns="geometry")
+    return pd.DataFrame(result)
+
+
 def summarize_values_period(gdf_or_df: gpd.GeoDataFrame | pd.DataFrame, var: str) -> pd.DataFrame:
     """
     Calculates an hourly time series of area mean values of the polygon.
@@ -361,7 +497,7 @@ def _prepare_leaflet_frame(
     return gdf.to_crs("EPSG:4326")
 
 
-def make_leaflet_map(
+def make_leaflet_map_timepoint(
     gdf_or_df,
     var,
     time_utc,
@@ -678,3 +814,312 @@ def make_leaflet_map(
 
     return m
 
+
+
+def make_leaflet_map_timeperiod(
+    gdf_or_df,
+    var,
+    show_cell_values=False,
+    decimals=1,
+    fill_opacity=0.5,
+    line_opacity=0.4,
+    line_weight=1,
+    tiles="OpenStreetMap",
+    map_zoom_start=None,
+    value_label_font_size=10,
+    value_label_color="auto",
+    tooltip=True,
+    save_html=None,
+    title=None,
+    subtitle=None,
+    reverse_colormap=False,
+    vmin=None,
+    vmax=None,
+    value_column: Optional[str] = None,
+):
+    """
+    Creates an interactive Leaflet map for spatially resolved temporal mean values
+    calculated by extract_mean_values_for_polygon(...).
+
+    In contrast to make_leaflet_map_timepoint(...), this function does not filter
+    by a single timestamp. It expects one row per grid cell, as returned by
+    extract_mean_values_for_polygon(..., return_geodataframe=True).
+
+    Parameters:
+    - gdf_or_df: Result from extract_mean_values_for_polygon(..., return_geodataframe=True)
+    - var: HOSTRADA variable name, e.g. "tas". By default this is also the value column.
+    - value_column: Optional explicit mean-value column, e.g. "tas_mean" if
+      extract_mean_values_for_polygon(..., mean_column="tas_mean") was used.
+    - show_cell_values: Displays the mean value of each cell as centered text
+    - decimals: Number of decimal places for value labels and tooltips
+    - fill_opacity: Opacity of the areas, default 0.5
+    - value_label_color: Text color or "auto" for automatic black/white selection
+    - save_html: Optional file path for saving the HTML map
+    """
+
+    def _clip_value(value, lo, hi):
+        return max(lo, min(hi, float(value)))
+
+    def _format_utc(value, fallback=""):
+        if value is None or pd.isna(value):
+            return fallback
+        try:
+            return pd.to_datetime(value, utc=True).strftime("%d.%m.%Y %H:%M UTC")
+        except Exception:
+            return str(value)
+
+    if gdf_or_df is None or len(gdf_or_df) == 0:
+        raise ValueError("gdf_or_df is empty.")
+
+    df = pd.DataFrame(gdf_or_df).copy()
+    map_value_col = value_column or var
+
+    if map_value_col not in df.columns:
+        possible_mean_col = f"{var}_mean"
+        if value_column is None and possible_mean_col in df.columns:
+            map_value_col = possible_mean_col
+        else:
+            raise KeyError(
+                f"The value column '{map_value_col}' is missing. "
+                f"Available columns: {list(df.columns)}. "
+                "Set value_column if a custom mean_column was used."
+            )
+
+    if "geometry" not in gdf_or_df.columns:
+        raise KeyError("The ‘geometry’ column is missing.")
+
+    if isinstance(gdf_or_df, gpd.GeoDataFrame):
+        gdf = gpd.GeoDataFrame(df, geometry="geometry", crs=gdf_or_df.crs)
+    else:
+        gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:3034")
+
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:3034")
+
+    gdf_wgs84 = gdf.to_crs(epsg=4326).copy()
+
+    vals = pd.to_numeric(gdf_wgs84[map_value_col], errors="coerce")
+    valid_vals = vals[np.isfinite(vals)]
+    if valid_vals.empty:
+        raise ValueError(f"No numerical values in column '{map_value_col}' found.")
+
+    data_min = float(valid_vals.min())
+    data_max = float(valid_vals.max())
+
+    min_val = data_min if vmin is None else float(vmin)
+    max_val = data_max if vmax is None else float(vmax)
+
+    if min_val >= max_val:
+        raise ValueError(
+            f"Unvalid values for vmin/vmax: vmin={min_val}, vmax={max_val}. "
+            "The following must apply: vmin < vmax."
+        )
+
+    if reverse_colormap:
+        colors = ["#ff0000", "#ff7f00", "#ffff00", "#00ffff", "#0000ff"]
+    else:
+        colors = ["#0000ff", "#00ffff", "#ffff00", "#ff7f00", "#ff0000"]
+
+    colormap = LinearColormap(
+        colors=colors,
+        vmin=min_val,
+        vmax=max_val,
+    )
+    colormap.caption = f"{map_value_col} period mean"
+
+    if "grid_lon" in gdf_wgs84.columns and "grid_lat" in gdf_wgs84.columns:
+        center_lat = float(pd.to_numeric(gdf_wgs84["grid_lat"], errors="coerce").mean())
+        center_lon = float(pd.to_numeric(gdf_wgs84["grid_lon"], errors="coerce").mean())
+    else:
+        centroids = gdf_wgs84.geometry.centroid
+        center_lat = float(centroids.y.mean())
+        center_lon = float(centroids.x.mean())
+
+    if map_zoom_start is None:
+        m = folium.Map(location=[center_lat, center_lon], tiles=tiles, zoomSnap=0.25)
+    else:
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=map_zoom_start, tiles=tiles, zoomSnap=0.25)
+
+    if subtitle is None:
+        if "time_start" in gdf_wgs84.columns and "time_end" in gdf_wgs84.columns:
+            period_start = pd.to_datetime(gdf_wgs84["time_start"], utc=True, errors="coerce").min()
+            period_end = pd.to_datetime(gdf_wgs84["time_end"], utc=True, errors="coerce").max()
+            if pd.notna(period_start) and pd.notna(period_end):
+                subtitle = f"{_format_utc(period_start)} – {_format_utc(period_end)}"
+        elif "time" in gdf_wgs84.columns:
+            period_time = pd.to_datetime(gdf_wgs84["time"], utc=True, errors="coerce").max()
+            if pd.notna(period_time):
+                subtitle = f"Zeitraummittel bis {_format_utc(period_time)}"
+
+    if title or subtitle:
+        header_html = f"""
+        <div style="
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.92);
+            padding: 10px 18px;
+            border: 1px solid #666;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+            max-width: 80vw;
+        ">
+            <div style="
+                font-size: 18px;
+                font-weight: 600;
+                line-height: 1.2;
+                margin-bottom: 2px;
+                white-space: normal;
+            ">
+                {title or ""}
+            </div>
+            <div style="
+                font-size: 13px;
+                color: #444;
+                line-height: 1.2;
+                white-space: normal;
+            ">
+                {subtitle or ""}
+            </div>
+        </div>
+        """
+        m.get_root().html.add_child(folium.Element(header_html))
+
+    def _style_function(feature):
+        value = feature["properties"].get(map_value_col)
+        if value is None or pd.isna(value):
+            fill_color = "#808080"
+        else:
+            fill_color = colormap(_clip_value(value, min_val, max_val))
+        return {
+            "fillColor": fill_color,
+            "color": "#333333",
+            "weight": line_weight,
+            "opacity": line_opacity,
+            "fillOpacity": fill_opacity,
+        }
+
+    # Generate a JSON-serializable copy for Folium.
+    gdf_json = gdf_wgs84.copy()
+
+    if "time_start" in gdf_json.columns:
+        gdf_json["time_start_str"] = pd.to_datetime(
+            gdf_json["time_start"], utc=True, errors="coerce"
+        ).dt.strftime("%Y-%m-%d %H:%M UTC")
+        gdf_json = gdf_json.drop(columns=["time_start"])
+
+    if "time_end" in gdf_json.columns:
+        gdf_json["time_end_str"] = pd.to_datetime(
+            gdf_json["time_end"], utc=True, errors="coerce"
+        ).dt.strftime("%Y-%m-%d %H:%M UTC")
+        gdf_json = gdf_json.drop(columns=["time_end"])
+
+    if "time" in gdf_json.columns:
+        gdf_json["time_str"] = pd.to_datetime(
+            gdf_json["time"], utc=True, errors="coerce"
+        ).dt.strftime("%Y-%m-%d %H:%M UTC")
+        gdf_json = gdf_json.drop(columns=["time"])
+
+    for col in gdf_json.columns:
+        if col == "geometry":
+            continue
+        if pd.api.types.is_datetime64_any_dtype(gdf_json[col]):
+            gdf_json[col] = pd.to_datetime(
+                gdf_json[col], utc=True, errors="coerce"
+            ).dt.strftime("%Y-%m-%d %H:%M UTC")
+
+    if tooltip:
+        tooltip_fields = [map_value_col]
+        tooltip_aliases = [f"{map_value_col}: "]
+
+        for field, alias in [
+            ("time_start_str", "Start: "),
+            ("time_end_str", "Ende: "),
+            ("time_count", "Zeitschritte: "),
+            (f"{var}_min", f"{var} min: "),
+            (f"{var}_max", f"{var} max: "),
+            (f"{var}_std", f"{var} std: "),
+        ]:
+            if field in gdf_json.columns:
+                tooltip_fields.append(field)
+                tooltip_aliases.append(alias)
+
+        folium.GeoJson(
+            gdf_json,
+            style_function=_style_function,
+            tooltip=folium.GeoJsonTooltip(
+                fields=tooltip_fields,
+                aliases=tooltip_aliases,
+                localize=True,
+                sticky=False,
+                labels=True,
+            ),
+        ).add_to(m)
+    else:
+        folium.GeoJson(
+            gdf_json,
+            style_function=_style_function,
+        ).add_to(m)
+
+    if show_cell_values:
+        for _, row in gdf_wgs84.iterrows():
+            if pd.isna(row[map_value_col]):
+                continue
+
+            value = float(row[map_value_col])
+            fill_color = colormap(_clip_value(value, min_val, max_val))
+
+            if isinstance(value_label_color, str) and value_label_color.lower() == "auto":
+                label_color = _auto_contrast_text_color(fill_color)
+            else:
+                label_color = value_label_color
+
+            if "grid_lon" in row and "grid_lat" in row and pd.notna(row["grid_lon"]) and pd.notna(row["grid_lat"]):
+                lon = float(row["grid_lon"])
+                lat = float(row["grid_lat"])
+            else:
+                rp = row.geometry.representative_point()
+                lon = float(rp.x)
+                lat = float(rp.y)
+
+            label_html = f"""
+            <div style="
+                font-size: {value_label_font_size}px;
+                color: {label_color};
+                font-weight: 600;
+                text-align: center;
+                white-space: nowrap;
+                text-shadow:
+                    -1px -1px 0 rgba(255,255,255,0.35),
+                     1px -1px 0 rgba(255,255,255,0.35),
+                    -1px  1px 0 rgba(255,255,255,0.35),
+                     1px  1px 0 rgba(255,255,255,0.35);
+            ">
+                {value:.{decimals}f}
+            </div>
+            """
+
+            folium.Marker(
+                location=[lat, lon],
+                icon=DivIcon(
+                    icon_size=(150, 36),
+                    icon_anchor=(75, 18),
+                    html=label_html,
+                ),
+            ).add_to(m)
+
+    colormap.add_to(m)
+
+    try:
+        bounds = gdf_wgs84.total_bounds  # minx, miny, maxx, maxy
+        m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    except Exception:
+        pass
+
+    if save_html:
+        m.save(save_html)
+
+    return m

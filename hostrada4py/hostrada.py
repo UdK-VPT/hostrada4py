@@ -21,6 +21,9 @@ BASE_URLS = {"tas":"https://opendata.dwd.de/climate_environment/CDC/grids_german
              "rsds":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/radiation_downwelling",
              "clt":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/cloud_cover",
              "hurs":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/humidity_relative",
+             "mixr":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/humidity_mixing_ratio",
+             "ps":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/pressure_surface",
+             "psl":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/pressure_sealevel",
              "tdew":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/dew_point"}
 
 FILE_PREFIXS = {"tas":"tas_1hr_HOSTRADA-v1-0_BE_gn",
@@ -30,6 +33,9 @@ FILE_PREFIXS = {"tas":"tas_1hr_HOSTRADA-v1-0_BE_gn",
                 "rsds":"rsds_1hr_HOSTRADA-v1-0_BE_gn",
                 "clt":"clt_1hr_HOSTRADA-v1-0_BE_gn",
                 "hurs":"hurs_1hr_HOSTRADA-v1-0_BE_gn",
+                "mixr":"mixr_1hr_HOSTRADA-v1-0_BE_gn",
+                "ps":"ps_1hr_HOSTRADA-v1-0_BE_gn",
+                "psl":"psl_1hr_HOSTRADA-v1-0_BE_gn",
                 "tdew":"tdew_1hr_HOSTRADA-v1-0_BE_gn"}
 
 def hostrada_filename(var: str, year: int, month: int) -> str:

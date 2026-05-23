@@ -25,6 +25,7 @@ import requests
 import xarray as xr
 from pyproj import Transformer
 import hostrada4py.hostrada as hs
+from hostrada4py.hostradaDiffuse import HostradaDiffuse, combine_point_variables
 
 CACHE_DIR = Path("hostrada_cache")
 
@@ -94,7 +95,7 @@ def extract_from_dataset(
 ) -> pd.DataFrame:
     ds = normalize_time_index(ds)
 
-    if var in ["tas", "uhi", "sfcWind", "sfcWind_direction", "rsds", "clt", "hurs", "tdew"]:
+    if var in ["tas", "uhi", "sfcWind", "sfcWind_direction", "rsds", "clt", "hurs", "mixr", "ps", "psl", "tdew"]:
         var_name = hs.find_variable(var, ds)
     else:
         print("unknown variable")
@@ -177,3 +178,86 @@ def extract_values_for_point(
     result = pd.concat(monthly_frames, ignore_index=True)
     result = result.drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)
     return result
+
+
+def extract_multiple_values_for_point(
+    vars: Iterable[str],
+    lon: float,
+    lat: float,
+    start: str,
+    end: str,
+    cache_dir: Path = CACHE_DIR,
+) -> pd.DataFrame:
+    """
+    Extract multiple HOSTRADA variables for one point and return them as a single
+    wide dataframe indexed by time.
+    """
+    frames: List[pd.DataFrame] = []
+    for var in vars:
+        frames.append(extract_values_for_point(var, lon, lat, start, end, cache_dir=cache_dir))
+    return combine_point_variables(frames)
+
+
+def extract_diffuse_radiation_for_point(
+    lon: float,
+    lat: float,
+    start: str,
+    end: str,
+    altitude: float | None = None,
+    tz: str = "UTC",
+    cache_dir: Path = CACHE_DIR,
+    apply_weather_correction: bool = False,
+) -> pd.DataFrame:
+    """
+    One-line helper for point-based HOSTRADA diffuse radiation calculation.
+
+    Downloads the required HOSTRADA variables, combines them into one dataframe,
+    and calculates DHI/DNI/kd using HostradaDiffuse with erbs_driesse as the
+    robust base method.
+    """
+    needed_vars = [
+        "rsds",
+        "tas",
+        "tdew",
+        "hurs",
+        "mixr",
+        "ps",
+        "psl",
+        "sfcWind",
+        "sfcWind_direction",
+        "clt",
+        "uhi",
+    ]
+
+    data = extract_multiple_values_for_point(
+        vars=needed_vars,
+        lon=lon,
+        lat=lat,
+        start=start,
+        end=end,
+        cache_dir=cache_dir,
+    )
+
+    model = HostradaDiffuse(
+        latitude=lat,
+        longitude=lon,
+        altitude=altitude,
+        tz=tz,
+    ) 
+
+    df = model.estimate(data, apply_weather_correction=apply_weather_correction)
+
+    # Index -> Create an explicit time column
+    df_out = df.copy()
+
+    # Ensure that the index is of type Datetime
+    if not isinstance(df_out.index, pd.DatetimeIndex):
+        raise ValueError("The index must be a datetime index")
+    
+    # Add a time column
+    df_out.insert(0, "time", df_out.index)
+    
+    # Optional: Reset index (recommended for export / CSV / user-friendliness)
+    df_out = df_out.reset_index(drop=True)
+    
+    return df_out
