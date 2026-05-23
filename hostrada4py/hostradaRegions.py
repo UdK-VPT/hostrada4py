@@ -36,8 +36,22 @@ REGIONS_POLYGONS = {
         (12.88, 53.06),
         (12.92, 53.42),
     ],
+    "Berlin und Potsdam": [
+        (12.78, 52.53),
+        (12.95, 52.70),
+        (13.42, 52.76),
+        (13.88, 52.66),
+        (13.91, 52.40),
+        (13.76, 52.20),
+        (13.24, 52.16),
+        (12.88, 52.23),
+        (12.76, 52.39),
+        (12.78, 52.53),
+    ],
 }
 
 # Variables for easier access
 boitzenburgerland_polygon = REGIONS_POLYGONS["Gemeinde Boitzenburger Land"]
 uckermark_polygon = REGIONS_POLYGONS["Landkreis Uckermark"]
+berlin_potsdam_polygon = REGIONS_POLYGONS["Berlin und Potsdam"]
+
