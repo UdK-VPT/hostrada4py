@@ -12,7 +12,7 @@ import requests
 from pathlib import Path
 import xarray as xr
 import pandas as pd
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Sequence
 
 BASE_URLS = {"tas":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/air_temperature_mean",
              "uhi":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/urban_heat_island_intensity",
@@ -45,20 +45,96 @@ def hostrada_filename(var: str, year: int, month: int) -> str:
 def hostrada_url(var: str, year: int, month: int) -> str:
     return f"{BASE_URLS[var]}/{hostrada_filename(var, year, month)}"
 
+def is_cached_file(path: Path) -> bool:
+    """Return True if a cached HOSTRADA file is present and non-empty."""
+    return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
 def download_file(url: str, target: Path, timeout: int = 120) -> Path:
+    """Download *url* to *target* only if the target is not cached yet.
+
+    The file is first written to ``*.part`` and then moved into place atomically.
+    This avoids treating interrupted downloads as valid cache entries later on.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    if target.exists() and target.stat().st_size > 0:
+    if is_cached_file(target):
         return target
 
-    with requests.get(url, stream=True, timeout=timeout) as r:
-        r.raise_for_status()
-        with open(target, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+    tmp_target = target.with_name(target.name + ".part")
+    if tmp_target.exists():
+        tmp_target.unlink()
 
-    return target    
+    try:
+        with requests.get(url, stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            with open(tmp_target, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+        tmp_target.replace(target)
+    except Exception:
+        if tmp_target.exists():
+            tmp_target.unlink()
+        raise
+
+    return target
+
+
+def ensure_month_file(
+    var: str,
+    year: int,
+    month: int,
+    cache_dir: Path,
+    timeout: int = 120,
+    verbose: bool = True,
+) -> Path:
+    """Return the local monthly HOSTRADA file, downloading it only if needed.
+
+    All higher-level extractors should go through this function so the DWD
+    server is contacted only for files that are both required by the requested
+    variable/date range and not already available in the local cache.
+    """
+    filename = hostrada_filename(var, year, month)
+    target = Path(cache_dir) / filename
+
+    if is_cached_file(target):
+        if verbose:
+            print(f"Cache: {target}")
+        return target
+
+    url = hostrada_url(var, year, month)
+    if verbose:
+        print(f"Download: {url}")
+    return download_file(url, target, timeout=timeout)
+
+
+def required_month_files(
+    vars: Sequence[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    cache_dir: Path,
+) -> List[Path]:
+    """List the minimum monthly files needed for variables and time range.
+
+    Duplicate variables are ignored while preserving the first occurrence. This
+    helper does not download anything; it only exposes the exact download plan
+    used by callers and tests.
+    """
+    seen_vars = set()
+    unique_vars = []
+    for var in vars:
+        if var not in seen_vars:
+            unique_vars.append(var)
+            seen_vars.add(var)
+
+    files: List[Path] = []
+    for var in unique_vars:
+        for year, month in month_range(start, end):
+            files.append(Path(cache_dir) / hostrada_filename(var, year, month))
+    return files
+
 
 def read_month_file(path: Path) -> xr.Dataset:
     return xr.open_dataset(path, engine="netcdf4")

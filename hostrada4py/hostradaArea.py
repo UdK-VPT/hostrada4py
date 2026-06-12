@@ -227,12 +227,7 @@ def extract_values_for_polygon(
     var_name: Optional[str] = None
 
     for year, month in hs.month_range(start_ts, end_ts):
-        filename = hs.hostrada_filename(var, year, month)
-        url = hs.hostrada_url(var, year, month)
-        target = cache_dir / filename
-
-        print(f"Lade Datei: {url}")
-        hs.download_file(url, target)
+        target = hs.ensure_month_file(var, year, month, cache_dir)
 
         print(f"Lese Datei: {target}")
         with hs.read_month_file(target) as ds:

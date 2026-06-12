@@ -160,12 +160,7 @@ def extract_values_for_point(
     monthly_frames: List[pd.DataFrame] = []
 
     for year, month in hs.month_range(start_ts, end_ts):
-        filename = hs.hostrada_filename(var, year, month)
-        url = hs.hostrada_url(var, year, month)
-        target = cache_dir / filename
-
-        print(f"Load: {url}")
-        hs.download_file(url, target)
+        target = hs.ensure_month_file(var, year, month, cache_dir)
 
         print(f"Read: {target}")
         with hs.read_month_file(target) as ds:
@@ -191,11 +186,42 @@ def extract_multiple_values_for_point(
     """
     Extract multiple HOSTRADA variables for one point and return them as a single
     wide dataframe indexed by time.
+
+    Duplicate variable names are evaluated only once so no duplicate monthly
+    files are requested from the DWD server.
     """
     frames: List[pd.DataFrame] = []
+    seen_vars = set()
     for var in vars:
+        if var in seen_vars:
+            continue
+        seen_vars.add(var)
         frames.append(extract_values_for_point(var, lon, lat, start, end, cache_dir=cache_dir))
     return combine_point_variables(frames)
+
+
+def _diffuse_required_vars(apply_weather_correction: bool) -> List[str]:
+    """Return the smallest HOSTRADA variable set needed by the DHI helper.
+
+    ``rsds`` is the only strictly required input for the Erbs-Driesse model.
+    ``tas`` and ``ps`` are kept in the default path because they are used by
+    pvlib's solar-position calculation when present, matching the previous
+    numerical behaviour without downloading unrelated weather fields.
+    """
+    required = ["rsds", "tas", "ps"]
+
+    if apply_weather_correction:
+        required.extend([
+            "clt",
+            "hurs",
+            "tdew",
+            "mixr",
+            "sfcWind",
+            "uhi",
+            "psl",
+        ])
+
+    return required
 
 
 def extract_diffuse_radiation_for_point(
@@ -215,19 +241,7 @@ def extract_diffuse_radiation_for_point(
     and calculates DHI/DNI/kd using HostradaDiffuse with erbs_driesse as the
     robust base method.
     """
-    needed_vars = [
-        "rsds",
-        "tas",
-        "tdew",
-        "hurs",
-        "mixr",
-        "ps",
-        "psl",
-        "sfcWind",
-        "sfcWind_direction",
-        "clt",
-        "uhi",
-    ]
+    needed_vars = _diffuse_required_vars(apply_weather_correction)
 
     data = extract_multiple_values_for_point(
         vars=needed_vars,
