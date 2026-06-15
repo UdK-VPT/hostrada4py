@@ -38,7 +38,7 @@ The notebooks
 * hostradaAreaMean.ipynb (mean values of 2D fields of weather data),
 * hostradaPoint-diffRad.ipynb (calculation of the diffuse radiation based of HOSTRADA values for one location)
 * hostradaHeatingDegreeDays.ipynb (calculation of heating degree days based of HOSTRADA values for one location) and
-* hostradaGenerateWeatherFiles (generation of weather data files based of HOSTRADA values for one location for diffrent simulation programms - IDA ICE, Polysun, EnergyPlus and the Modelica library BuildingSystems). 
+* hostradaGenerateWeatherFiles (generation of weather data files based of HOSTRADA values for one location for different simulation programms - IDA ICE, Polysun, EnergyPlus and the Modelica library BuildingSystems). 
 
 illustrate the use of the Python functions of hostrada4py.
 
