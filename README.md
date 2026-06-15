@@ -31,7 +31,16 @@ The folder hostrada4py includes some Python files which simplifies the access to
 For the largest 50 German cities polygons are predefind in the file hostrada4py/hostradaCities.py.
 
 ## Notebooks
-The notebooks hostradaPoint.ipynb, hostradaArea.ipynb, hostradaAreaMean.ipynb and hostradaPopint_diffRad.ipynb illustrate the use of the Python functions of hostrada4py.
+The notebooks 
+
+* hostradaPoint.ipynb (time series of weather data for one location),
+* hostradaArea.ipynb (2D fields of weather data),
+* hostradaAreaMean.ipynb (mean values of 2D fields of weather data),
+* hostradaPoint-diffRad.ipynb (calculation of the diffuse radiation based of HOSTRADA values for one location)
+* hostradaHeatingDegreeDays.ipynb (calculation of heating degree days based of HOSTRADA values for one location) and
+* hostradaGenerateWeatherFiles (generation of weather data files based of HOSTRADA values for one location for diffrent simulation programms - IDA ICE, Polysun, EnergyPlus and the Modelica library BuildingSystems). 
+
+illustrate the use of the Python functions of hostrada4py.
 
 
 ## Diffuse horizontal irradiance (DHI)
