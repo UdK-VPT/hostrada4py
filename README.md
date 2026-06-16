@@ -28,17 +28,17 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 ## The Python library hostrada4py
 The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. hostrada.py contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in hostradaPoint.py support the evaluation of weather data at a climate location specified by longitude and latitude, whereas hostradaArea.py provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
 
-For the largest 50 German cities and a couple of regions polygons are predefined in the files hostrada4py/hostradaCities.py and hostrada4py/hostradaRegions.py.
+For the largest 50 German cities and a couple of regions polygons are predefined in the files **hostrada4py/hostradaCities.py** and **hostrada4py/hostradaRegions.py**.
 
 ## Notebooks
 The notebooks 
 
-* hostradaPoint.ipynb (time series of weather data for one location),
-* hostradaArea.ipynb (2D fields of weather data),
-* hostradaAreaMean.ipynb (mean values of 2D fields of weather data),
-* hostradaPoint-diffRad.ipynb (calculation of the diffuse radiation based of HOSTRADA values for one location)
-* hostradaHeatingDegreeDays.ipynb (calculation of heating degree days based of HOSTRADA values for one location) and
-* hostradaGenerateWeatherFiles (generation of weather data files based of HOSTRADA values for one location for different simulation programs - IDA ICE, Polysun, EnergyPlus and the Modelica library BuildingSystems). 
+* **hostradaPoint.ipynb** (time series of weather data for one location),
+* **hostradaArea.ipynb** (2D fields of weather data),
+* **hostradaAreaMean.ipynb** (mean values of 2D fields of weather data),
+* **hostradaPoint-diffRad.ipynb** (calculation of the diffuse radiation based of HOSTRADA values for one location)
+* **hostradaHeatingDegreeDays.ipynb** (calculation of heating degree days based of HOSTRADA values for one location) and
+* **hostradaGenerateWeatherFiles.ipynb** (generation of weather data files based of HOSTRADA values for one location for different simulation programs - IDA ICE, Polysun, EnergyPlus, SimStadt and the Modelica library BuildingSystems). 
 
 illustrate the use of the Python functions of hostrada4py.
 
