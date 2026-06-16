@@ -5,7 +5,7 @@ hostrada4Py is a Python library with access and for evaluation of the HOSTRADA w
 
 ## Installation
 
-```pip install requests xarray pandas typing geopandas pyproj shapely numpy matplotlib seaborn pvlib```
+```pip install requests xarray pandas typing geopandas pyproj shapely numpy matplotlib seaborn pvlib ipyleaflet ipywidgets plotly```
 
 ## The HOSTRADA project of DWD
 The high-resolution hourly grid data set (HOSTRADA) for Germany published by DWD is a climatological reference data set. With a spatial resolution of one square kilometer and a temporal resolution of one hour, it provides a wide range of meteorological parameters for the land surfaces of the Federal Republic of Germany since 1995.
