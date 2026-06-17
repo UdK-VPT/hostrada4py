@@ -805,7 +805,9 @@ def make_leaflet_map_timepoint(
         pass
 
     if save_html:
-        m.save(save_html)
+        save_path = Path(save_html)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        m.save(save_path)
 
     return m
 
@@ -1115,6 +1117,8 @@ def make_leaflet_map_timeperiod(
         pass
 
     if save_html:
-        m.save(save_html)
+        save_path = Path(save_html)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        m.save(save_path)
 
     return m
