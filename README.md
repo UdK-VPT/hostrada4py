@@ -66,10 +66,9 @@ If additional HOSTRADA variables are available, a conservative weather-based cor
 
 ## Optional NetCDF subsetting cache
 
-For long weather-file exports `hostrada4py` can now reduce the amount of data
+For long weather-file exports `hostrada4py` can reduce the amount of data
 that is read and kept locally by creating spatial/temporal NetCDF subsets for a
-point or polygon request. The default behaviour is unchanged and still caches the
-full monthly HOSTRADA files.
+point or polygon request. The default behaviour caches the full monthly HOSTRADA files.
 
 Enable the subset mode from Python before starting an export:
 
