@@ -5,7 +5,7 @@ hostrada4Py is a Python library with access and for evaluation of the HOSTRADA w
 
 ## Installation
 
-```pip install requests xarray pandas typing geopandas pyproj shapely numpy matplotlib seaborn pvlib ipyleaflet ipywidgets plotly```
+```pip install requests xarray pandas typing geopandas pyproj shapely numpy matplotlib seaborn pvlib ipyleaflet ipywidgets plotly fsspec h5netcdf```
 
 ## The HOSTRADA project of DWD
 The high-resolution hourly grid data set (HOSTRADA) for Germany published by DWD is a climatological reference data set. With a spatial resolution of one square kilometer and a temporal resolution of one hour, it provides a wide range of meteorological parameters for the land surfaces of the Federal Republic of Germany since 1995.
@@ -63,3 +63,59 @@ print(df[["rsds", "dhi", "dni", "kd"]].head())
 ```
 
 If additional HOSTRADA variables are available, a conservative weather-based correction can optionally be enabled with `apply_weather_correction=True`.
+
+## Optional NetCDF subsetting cache
+
+For long weather-file exports `hostrada4py` can now reduce the amount of data
+that is read and kept locally by creating spatial/temporal NetCDF subsets for a
+point or polygon request. The default behaviour is unchanged and still caches the
+full monthly HOSTRADA files.
+
+Enable the subset mode from Python before starting an export:
+
+```python
+import os
+os.environ["HOSTRADA_NETCDF_SUBSET_MODE"] = "subset"
+os.environ["HOSTRADA_NETCDF_SUBSET_MARGIN_CELLS"] = "1"
+```
+
+or use it directly with the point/area helpers:
+
+```python
+from hostrada4py.hostradaPoint import extract_values_for_point
+
+extract_values_for_point(
+    "tas",
+    lon=13.405,
+    lat=52.52,
+    start="2023-01-01 00:00",
+    end="2023-01-31 23:00",
+    cache_strategy="subset",
+)
+```
+
+Available modes:
+
+- `full`: original full-file download and cache (default)
+- `subset`: full download if needed, then write and reuse a small local subset
+- `http_range`: best-effort HTTP byte-range/chunked access, then local subset
+- `auto`: try `http_range`, then fall back to `subset`
+
+The DWD OpenData HOSTRADA endpoint is a static file service. A true server-side
+NetCDF subset is only possible when the remote endpoint and local optional
+packages support chunked/range access or an OPeNDAP/THREDDS/NCSS-like service.
+Therefore `http_range` is intentionally optional and falls back to the robust
+full download unless `HOSTRADA_NETCDF_SUBSET_FALLBACK=0` is set.
+
+Optional packages for `http_range` mode:
+
+```bash
+pip install fsspec h5netcdf
+```
+
+If disk space is more important than keeping the original full cache, the full
+monthly file can be removed after the subset file has been created:
+
+```bash
+export HOSTRADA_DROP_FULL_AFTER_SUBSET=1
+```

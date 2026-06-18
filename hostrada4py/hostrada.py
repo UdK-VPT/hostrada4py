@@ -10,14 +10,18 @@ Required installations:
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 import os
 import random
 import time
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 import requests
 import xarray as xr
 import pandas as pd
+import numpy as np
 from typing import Iterable, List, Tuple, Sequence, Optional, Union
 
 BASE_URLS = {"tas":"https://opendata.dwd.de/climate_environment/CDC/grids_germany/hourly/hostrada/air_temperature_mean",
@@ -54,6 +58,20 @@ DOWNLOAD_BACKOFF = float(os.getenv("HOSTRADA_DOWNLOAD_BACKOFF", "2.0"))
 DOWNLOAD_CHUNK_SIZE = int(os.getenv("HOSTRADA_DOWNLOAD_CHUNK_SIZE", str(1024 * 1024)))
 DOWNLOAD_LOCK_TIMEOUT = float(os.getenv("HOSTRADA_DOWNLOAD_LOCK_TIMEOUT", "900"))
 DOWNLOAD_MIN_BYTES = int(os.getenv("HOSTRADA_DOWNLOAD_MIN_BYTES", "1024"))
+
+# Optional NetCDF subsetting. The default remains the original full monthly-file
+# cache. Set HOSTRADA_NETCDF_SUBSET_MODE to one of:
+#   full       -> original behaviour (default)
+#   subset     -> download full file if needed, write small local subset cache
+#   http_range -> try HTTP range/chunked remote reads first, fall back if enabled
+#   auto       -> try http_range, then local subset fallback
+# The HTTP range path is best-effort and requires optional packages
+# fsspec + h5netcdf and server support for byte ranges.
+SUBSET_MODE_DEFAULT = os.getenv("HOSTRADA_NETCDF_SUBSET_MODE", "full")
+SUBSET_MARGIN_CELLS_DEFAULT = int(os.getenv("HOSTRADA_NETCDF_SUBSET_MARGIN_CELLS", "1"))
+SUBSET_HTTP_RANGE_BLOCK_SIZE = int(os.getenv("HOSTRADA_HTTP_RANGE_BLOCK_SIZE", str(2 * 1024 * 1024)))
+SUBSET_FALLBACK_TO_FULL = os.getenv("HOSTRADA_NETCDF_SUBSET_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+SUBSET_DROP_FULL_AFTER_CREATE = os.getenv("HOSTRADA_DROP_FULL_AFTER_SUBSET", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 TimeoutValue = Union[float, int, Tuple[float, float]]
 
@@ -297,6 +315,408 @@ def ensure_month_file(
     if verbose:
         print(f"Download: {url}")
     return download_file(url, target, timeout=timeout, retries=retries, backoff=backoff)
+
+
+def _normalise_subset_mode(mode: Optional[str] = None) -> str:
+    value = (mode or os.getenv("HOSTRADA_NETCDF_SUBSET_MODE", SUBSET_MODE_DEFAULT) or "full").strip().lower()
+    aliases = {
+        "0": "full",
+        "false": "full",
+        "no": "full",
+        "off": "full",
+        "1": "subset",
+        "true": "subset",
+        "yes": "subset",
+        "on": "subset",
+        "range": "http_range",
+        "remote": "http_range",
+        "remote_subset": "http_range",
+        "http-range": "http_range",
+    }
+    value = aliases.get(value, value)
+    valid = {"full", "subset", "http_range", "auto"}
+    if value not in valid:
+        raise ValueError(
+            "Unknown HOSTRADA NetCDF subset mode "
+            f"'{value}'. Use one of: {sorted(valid)}."
+        )
+    return value
+
+
+def _normalise_margin_cells(margin_cells: Optional[int]) -> int:
+    if margin_cells is None:
+        margin_cells = int(os.getenv("HOSTRADA_NETCDF_SUBSET_MARGIN_CELLS", str(SUBSET_MARGIN_CELLS_DEFAULT)))
+    return max(0, int(margin_cells))
+
+
+def _subset_cache_path(cache_dir: Path, filename: str, kind: str, params: dict) -> Path:
+    serialisable = json.dumps(params, sort_keys=True, default=str, separators=(",", ":"))
+    digest = hashlib.sha1(serialisable.encode("utf-8")).hexdigest()[:16]
+    return Path(cache_dir) / "subsets" / kind / f"{Path(filename).stem}.{digest}.nc"
+
+
+def _find_xy_dim_names_for_var(ds: xr.Dataset, var: str) -> Tuple[str, str]:
+    var_name = find_variable(var, ds)
+    spatial_dims = [d for d in ds[var_name].dims if d.lower() != "time"]
+    if len(spatial_dims) != 2:
+        raise KeyError(f"Expected exactly two spatial dimensions for {var_name}, found {ds[var_name].dims}")
+    x_candidates = [d for d in spatial_dims if d.lower() == "x"]
+    y_candidates = [d for d in spatial_dims if d.lower() == "y"]
+    if len(x_candidates) == 1 and len(y_candidates) == 1:
+        return x_candidates[0], y_candidates[0]
+    return spatial_dims[1], spatial_dims[0]
+
+
+def _axis_values(ds: xr.Dataset, x_dim: str, y_dim: str) -> Tuple[np.ndarray, np.ndarray]:
+    if x_dim not in ds.coords or y_dim not in ds.coords:
+        raise KeyError(f"Spatial coordinates are missing: x_dim={x_dim}, y_dim={y_dim}")
+    x_vals = np.asarray(ds.coords[x_dim].values)
+    y_vals = np.asarray(ds.coords[y_dim].values)
+    if x_vals.ndim != 1 or y_vals.ndim != 1:
+        raise ValueError(f"Expected 1D x/y coordinates, got {x_vals.ndim}D/{y_vals.ndim}D")
+    return x_vals, y_vals
+
+
+def _point_to_epsg3034(lon: float, lat: float) -> Tuple[float, float]:
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3034", always_xy=True)
+    x, y = transformer.transform(float(lon), float(lat))
+    return float(x), float(y)
+
+
+def _index_slice_around_value(values: np.ndarray, value: float, margin_cells: int) -> slice:
+    idx = int(np.abs(values - value).argmin())
+    start = max(0, idx - margin_cells)
+    stop = min(len(values), idx + margin_cells + 1)
+    return slice(start, stop)
+
+
+def _index_slice_for_bounds(values: np.ndarray, low: float, high: float, margin_cells: int) -> slice:
+    lo, hi = sorted((float(low), float(high)))
+    idx = np.where((values >= lo) & (values <= hi))[0]
+    if idx.size == 0:
+        centre = 0.5 * (lo + hi)
+        nearest = int(np.abs(values - centre).argmin())
+        start = max(0, nearest - margin_cells)
+        stop = min(len(values), nearest + margin_cells + 1)
+        return slice(start, stop)
+    start = max(0, int(idx.min()) - margin_cells)
+    stop = min(len(values), int(idx.max()) + margin_cells + 1)
+    return slice(start, stop)
+
+
+def _time_slice(start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> slice:
+    if start is None and end is None:
+        return slice(None)
+    start_naive = pd.Timestamp(start).tz_localize(None) if start is not None else None
+    end_naive = pd.Timestamp(end).tz_localize(None) if end is not None else None
+    return slice(start_naive, end_naive)
+
+
+def _write_subset_from_dataset(
+    ds: xr.Dataset,
+    target: Path,
+    var: str,
+    start: Optional[pd.Timestamp],
+    end: Optional[pd.Timestamp],
+    x_slice: slice,
+    y_slice: slice,
+) -> Path:
+    var_name = find_variable(var, ds)
+    x_dim, y_dim = _find_xy_dim_names_for_var(ds, var)
+    indexers = {x_dim: x_slice, y_dim: y_slice}
+    subset = ds.isel(indexers)
+    if "time" in subset.coords or "time" in subset.dims:
+        subset = subset.sel(time=_time_slice(start, end))
+    # Keep only the requested HOSTRADA variable and coordinates. This avoids
+    # accidentally writing unrelated auxiliary variables when future files add
+    # additional data variables.
+    keep_vars = [var_name]
+    subset = subset[keep_vars]
+    subset = subset.load()
+
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_target = target.with_name(target.name + ".part")
+    if tmp_target.exists():
+        tmp_target.unlink()
+    subset.to_netcdf(tmp_target, engine="netcdf4")
+    tmp_target.replace(target)
+    return target
+
+
+def _subset_local_file(
+    source: Path,
+    target: Path,
+    var: str,
+    start: Optional[pd.Timestamp],
+    end: Optional[pd.Timestamp],
+    selector: dict,
+    margin_cells: int,
+) -> Path:
+    with xr.open_dataset(source, engine="netcdf4") as ds:
+        var_name = find_variable(var, ds)
+        x_dim, y_dim = _find_xy_dim_names_for_var(ds, var)
+        x_vals, y_vals = _axis_values(ds, x_dim, y_dim)
+
+        if selector["type"] == "point_epsg3034":
+            x_slice = _index_slice_around_value(x_vals, selector["x"], margin_cells)
+            y_slice = _index_slice_around_value(y_vals, selector["y"], margin_cells)
+        elif selector["type"] == "bbox_epsg3034":
+            minx, miny, maxx, maxy = selector["bbox"]
+            x_slice = _index_slice_for_bounds(x_vals, minx, maxx, margin_cells)
+            y_slice = _index_slice_for_bounds(y_vals, miny, maxy, margin_cells)
+        else:
+            raise ValueError(f"Unknown subset selector: {selector}")
+
+        return _write_subset_from_dataset(ds, target, var, start, end, x_slice, y_slice)
+
+
+def _subset_remote_http_range(
+    url: str,
+    target: Path,
+    var: str,
+    start: Optional[pd.Timestamp],
+    end: Optional[pd.Timestamp],
+    selector: dict,
+    margin_cells: int,
+) -> Path:
+    """Best-effort remote NetCDF subsetting via HTTP byte ranges.
+
+    This path can reduce transferred bytes only if the server supports HTTP
+    Range requests and the optional packages fsspec + h5netcdf are installed.
+    It is intentionally optional because the DWD OpenData HTTP endpoint is a
+    static-file service rather than a guaranteed OPeNDAP/NCSS subset service.
+    """
+    import fsspec  # optional dependency
+
+    engine = os.getenv("HOSTRADA_HTTP_RANGE_ENGINE", "h5netcdf")
+    block_size = int(os.getenv("HOSTRADA_HTTP_RANGE_BLOCK_SIZE", str(SUBSET_HTTP_RANGE_BLOCK_SIZE)))
+    headers = {"User-Agent": "hostrada4py/http-range-subsetter"}
+
+    opened = fsspec.open(url, mode="rb", block_size=block_size, cache_type="bytes", headers=headers)
+    fobj = opened.open()
+    ds = None
+    try:
+        ds = xr.open_dataset(fobj, engine=engine)
+        x_dim, y_dim = _find_xy_dim_names_for_var(ds, var)
+        x_vals, y_vals = _axis_values(ds, x_dim, y_dim)
+
+        if selector["type"] == "point_epsg3034":
+            x_slice = _index_slice_around_value(x_vals, selector["x"], margin_cells)
+            y_slice = _index_slice_around_value(y_vals, selector["y"], margin_cells)
+        elif selector["type"] == "bbox_epsg3034":
+            minx, miny, maxx, maxy = selector["bbox"]
+            x_slice = _index_slice_for_bounds(x_vals, minx, maxx, margin_cells)
+            y_slice = _index_slice_for_bounds(y_vals, miny, maxy, margin_cells)
+        else:
+            raise ValueError(f"Unknown subset selector: {selector}")
+
+        return _write_subset_from_dataset(ds, target, var, start, end, x_slice, y_slice)
+    finally:
+        if ds is not None:
+            ds.close()
+        fobj.close()
+
+
+def _ensure_month_subset_file(
+    var: str,
+    year: int,
+    month: int,
+    cache_dir: Path,
+    subset_target: Path,
+    selector: dict,
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    subset_mode: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
+    timeout: Optional[TimeoutValue] = None,
+    retries: int = DOWNLOAD_RETRIES,
+    backoff: float = DOWNLOAD_BACKOFF,
+    verbose: bool = True,
+) -> Path:
+    mode = _normalise_subset_mode(subset_mode)
+    if mode == "full":
+        return ensure_month_file(var, year, month, cache_dir, timeout=timeout, retries=retries, backoff=backoff, verbose=verbose)
+
+    subset_target = Path(subset_target)
+    if is_cached_file(subset_target):
+        if verbose:
+            print(f"Subset cache: {subset_target}")
+        return subset_target
+
+    margin_cells = _normalise_margin_cells(subset_margin_cells)
+    url = hostrada_url(var, year, month)
+    errors = []
+
+    if mode in {"http_range", "auto"}:
+        try:
+            if verbose:
+                print(f"HTTP-range subset: {url}")
+            return _subset_remote_http_range(
+                url=url,
+                target=subset_target,
+                var=var,
+                start=start,
+                end=end,
+                selector=selector,
+                margin_cells=margin_cells,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort path with fallback
+            errors.append(exc)
+            if not SUBSET_FALLBACK_TO_FULL and mode == "http_range":
+                raise RuntimeError(f"HTTP-range NetCDF subsetting failed for {url}: {exc}") from exc
+            warnings.warn(
+                "HTTP-range NetCDF subsetting failed; falling back to full monthly "
+                f"download followed by local subsetting. Last error: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    full_file = ensure_month_file(
+        var, year, month, cache_dir, timeout=timeout, retries=retries, backoff=backoff, verbose=verbose
+    )
+    if verbose:
+        print(f"Create subset cache: {subset_target}")
+    result = _subset_local_file(
+        source=full_file,
+        target=subset_target,
+        var=var,
+        start=start,
+        end=end,
+        selector=selector,
+        margin_cells=margin_cells,
+    )
+
+    drop_full = os.getenv("HOSTRADA_DROP_FULL_AFTER_SUBSET", "1" if SUBSET_DROP_FULL_AFTER_CREATE else "0").strip().lower() in {"1", "true", "yes", "on"}
+    if drop_full and Path(full_file).exists():
+        try:
+            Path(full_file).unlink()
+        except OSError:
+            pass
+    return result
+
+
+def ensure_month_file_for_point(
+    var: str,
+    year: int,
+    month: int,
+    cache_dir: Path,
+    lon: float,
+    lat: float,
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    subset_mode: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
+    timeout: Optional[TimeoutValue] = None,
+    retries: int = DOWNLOAD_RETRIES,
+    backoff: float = DOWNLOAD_BACKOFF,
+    verbose: bool = True,
+) -> Path:
+    """Return a monthly HOSTRADA file for one point.
+
+    By default this is exactly the original full monthly cache file. If
+    ``subset_mode`` or ``HOSTRADA_NETCDF_SUBSET_MODE`` is set to ``subset``,
+    ``http_range`` or ``auto``, a small NetCDF file containing only the relevant
+    time window and a small spatial neighbourhood around the point is returned.
+    """
+    mode = _normalise_subset_mode(subset_mode)
+    if mode == "full":
+        return ensure_month_file(var, year, month, cache_dir, timeout=timeout, retries=retries, backoff=backoff, verbose=verbose)
+
+    x, y = _point_to_epsg3034(lon, lat)
+    margin_cells = _normalise_margin_cells(subset_margin_cells)
+    filename = hostrada_filename(var, year, month)
+    params = {
+        "version": 1,
+        "kind": "point",
+        "var": var,
+        "year": year,
+        "month": month,
+        "lon": round(float(lon), 8),
+        "lat": round(float(lat), 8),
+        "start": str(pd.Timestamp(start).tz_localize(None) if start is not None else ""),
+        "end": str(pd.Timestamp(end).tz_localize(None) if end is not None else ""),
+        "margin_cells": margin_cells,
+    }
+    target = _subset_cache_path(cache_dir, filename, "point", params)
+    selector = {"type": "point_epsg3034", "x": x, "y": y}
+    return _ensure_month_subset_file(
+        var=var,
+        year=year,
+        month=month,
+        cache_dir=cache_dir,
+        subset_target=target,
+        selector=selector,
+        start=start,
+        end=end,
+        subset_mode=mode,
+        subset_margin_cells=margin_cells,
+        timeout=timeout,
+        retries=retries,
+        backoff=backoff,
+        verbose=verbose,
+    )
+
+
+def ensure_month_file_for_bbox(
+    var: str,
+    year: int,
+    month: int,
+    cache_dir: Path,
+    bbox_epsg3034: Tuple[float, float, float, float],
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    subset_mode: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
+    timeout: Optional[TimeoutValue] = None,
+    retries: int = DOWNLOAD_RETRIES,
+    backoff: float = DOWNLOAD_BACKOFF,
+    verbose: bool = True,
+) -> Path:
+    """Return a monthly HOSTRADA file restricted to an EPSG:3034 bounding box.
+
+    This is useful for polygon/area queries. The default is the unchanged full
+    monthly download; set ``subset_mode`` or ``HOSTRADA_NETCDF_SUBSET_MODE`` for
+    a smaller cache file.
+    """
+    mode = _normalise_subset_mode(subset_mode)
+    if mode == "full":
+        return ensure_month_file(var, year, month, cache_dir, timeout=timeout, retries=retries, backoff=backoff, verbose=verbose)
+
+    minx, miny, maxx, maxy = [float(v) for v in bbox_epsg3034]
+    margin_cells = _normalise_margin_cells(subset_margin_cells)
+    filename = hostrada_filename(var, year, month)
+    params = {
+        "version": 1,
+        "kind": "bbox",
+        "var": var,
+        "year": year,
+        "month": month,
+        "bbox_epsg3034": [round(minx, 3), round(miny, 3), round(maxx, 3), round(maxy, 3)],
+        "start": str(pd.Timestamp(start).tz_localize(None) if start is not None else ""),
+        "end": str(pd.Timestamp(end).tz_localize(None) if end is not None else ""),
+        "margin_cells": margin_cells,
+    }
+    target = _subset_cache_path(cache_dir, filename, "bbox", params)
+    selector = {"type": "bbox_epsg3034", "bbox": (minx, miny, maxx, maxy)}
+    return _ensure_month_subset_file(
+        var=var,
+        year=year,
+        month=month,
+        cache_dir=cache_dir,
+        subset_target=target,
+        selector=selector,
+        start=start,
+        end=end,
+        subset_mode=mode,
+        subset_margin_cells=margin_cells,
+        timeout=timeout,
+        retries=retries,
+        backoff=backoff,
+        verbose=verbose,
+    )
 
 
 def required_month_files(

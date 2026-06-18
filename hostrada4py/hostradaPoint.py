@@ -18,7 +18,7 @@ Required installations:
 from __future__ import annotations
 import calendar
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 import requests
@@ -150,6 +150,8 @@ def extract_values_for_point(
     start: str,
     end: str,
     cache_dir: Path = CACHE_DIR,
+    cache_strategy: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
 ) -> pd.DataFrame:
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC")
@@ -160,7 +162,18 @@ def extract_values_for_point(
     monthly_frames: List[pd.DataFrame] = []
 
     for year, month in hs.month_range(start_ts, end_ts):
-        target = hs.ensure_month_file(var, year, month, cache_dir)
+        target = hs.ensure_month_file_for_point(
+            var,
+            year,
+            month,
+            cache_dir,
+            lon=lon,
+            lat=lat,
+            start=start_ts,
+            end=end_ts,
+            subset_mode=cache_strategy,
+            subset_margin_cells=subset_margin_cells,
+        )
 
         print(f"Read: {target}")
         with hs.read_month_file(target) as ds:
@@ -182,6 +195,8 @@ def extract_multiple_values_for_point(
     start: str,
     end: str,
     cache_dir: Path = CACHE_DIR,
+    cache_strategy: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Extract multiple HOSTRADA variables for one point and return them as a single
@@ -196,7 +211,18 @@ def extract_multiple_values_for_point(
         if var in seen_vars:
             continue
         seen_vars.add(var)
-        frames.append(extract_values_for_point(var, lon, lat, start, end, cache_dir=cache_dir))
+        frames.append(
+            extract_values_for_point(
+                var,
+                lon,
+                lat,
+                start,
+                end,
+                cache_dir=cache_dir,
+                cache_strategy=cache_strategy,
+                subset_margin_cells=subset_margin_cells,
+            )
+        )
     return combine_point_variables(frames)
 
 
@@ -233,6 +259,8 @@ def extract_diffuse_radiation_for_point(
     tz: str = "UTC",
     cache_dir: Path = CACHE_DIR,
     apply_weather_correction: bool = False,
+    cache_strategy: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     One-line helper for point-based HOSTRADA diffuse radiation calculation.
@@ -250,6 +278,8 @@ def extract_diffuse_radiation_for_point(
         start=start,
         end=end,
         cache_dir=cache_dir,
+        cache_strategy=cache_strategy,
+        subset_margin_cells=subset_margin_cells,
     )
 
     model = HostradaDiffuse(

@@ -17,3 +17,6 @@ matplotlib
 seaborn
 plotly
 pvlib
+
+fsspec 
+h5netcdf

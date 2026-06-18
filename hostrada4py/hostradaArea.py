@@ -215,6 +215,8 @@ def extract_values_for_polygon(
     cache_dir: Path = CACHE_DIR,
     selection_mode: str = "within",
     return_geodataframe: bool = True,
+    cache_strategy: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
 ) -> gpd.GeoDataFrame | pd.DataFrame:
     start_ts = pd.Timestamp(start_utc, tz="UTC")
     end_ts = pd.Timestamp(end_utc, tz="UTC")
@@ -225,9 +227,20 @@ def extract_values_for_polygon(
     selected_grid = None
     frames: List[gpd.GeoDataFrame] = []
     var_name: Optional[str] = None
+    polygon_3034_bbox = polygon_lonlat_to_epsg3034(polygon_lonlat).bounds
 
     for year, month in hs.month_range(start_ts, end_ts):
-        target = hs.ensure_month_file(var, year, month, cache_dir)
+        target = hs.ensure_month_file_for_bbox(
+            var,
+            year,
+            month,
+            cache_dir,
+            bbox_epsg3034=polygon_3034_bbox,
+            start=start_ts,
+            end=end_ts,
+            subset_mode=cache_strategy,
+            subset_margin_cells=subset_margin_cells,
+        )
 
         print(f"Lese Datei: {target}")
         with hs.read_month_file(target) as ds:
@@ -313,6 +326,8 @@ def extract_mean_values_for_polygon(
     return_geodataframe: bool = True,
     mean_column: Optional[str] = None,
     include_statistics: bool = True,
+    cache_strategy: Optional[str] = None,
+    subset_margin_cells: Optional[int] = None,
 ) -> gpd.GeoDataFrame | pd.DataFrame:
     """
     Calculates spatially resolved temporal mean values for all 1-km cells inside
@@ -345,6 +360,8 @@ def extract_mean_values_for_polygon(
         cache_dir=cache_dir,
         selection_mode=selection_mode,
         return_geodataframe=True,
+        cache_strategy=cache_strategy,
+        subset_margin_cells=subset_margin_cells,
     )
 
     if values.empty:
