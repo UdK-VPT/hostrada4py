@@ -26,7 +26,7 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 * Urban Heat Island Intensity (UHI)
 
 ## The Python library hostrada4py
-The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. hostrada.py contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in hostradaPoint.py support the evaluation of weather data at a climate location specified by longitude and latitude, whereas hostradaArea.py provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
+The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. **hostrada.py** contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in **hostradaPoint.py** support the evaluation of weather data at a climate location specified by longitude and latitude, whereas **hostradaArea.py** provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
 
 For the largest 50 German cities and a couple of regions polygons are predefined in the files **hostrada4py/hostradaCities.py** and **hostrada4py/hostradaRegions.py**.
 
