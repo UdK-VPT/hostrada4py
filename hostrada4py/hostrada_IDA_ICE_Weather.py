@@ -6,31 +6,25 @@ hostrada_IDA_ICE_Weather.py
 Create point-based weather files for IDA ICE from HOSTRADA data.
 
 The public helper ``create_ida_ice_weather_file`` writes a whitespace separated
-``.prn`` file for a user-defined period. It keeps the HOSTRADA download volume
-minimal by requesting only variables that are needed for the selected output.
+``.prn`` file for a user-defined period. The default output format follows the
+uploaded IDA ICE reference file ``KALMAR.PRN``.
 
 Default output columns
 ----------------------
-The default format is an IDA-ICE-oriented hourly climate table with the columns::
+The generated file contains a compact hourly climate table with seven columns::
 
-    Month Day Hour DryBulb_C RelHum_pct DirectNormal_W_m2 DiffuseHorizontal_W_m2 WindDir_deg WindSpeed_m_s GlobalHorizontal_W_m2
+    Hour DryBulb_C RelHum WindDirect WindSpeed DirectNormal DiffuseHorizontal
 
-``Hour`` is written as 1..24, i.e. the common convention for hourly weather
-records where hour 1 denotes the interval ending at 01:00. Set
-``hour_convention='zero_based'`` if the target workflow expects 0..23.
-
-Notes
------
-IDA ICE installations and import workflows can differ between versions and
-regional climate databases. The generated file intentionally contains a compact
-numeric table plus short comment headers so it can be inspected and, if needed,
-mapped in the IDA ICE climate-file import dialog.
+``Hour`` is a continuous hour counter starting at 0, as in the IDA ICE example
+file. ``DirectNormal`` is the direct normal irradiance (DNI) in W/m2, not the
+direct horizontal irradiance. It is calculated explicitly from the direct
+horizontal component and the solar zenith angle.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -39,16 +33,13 @@ from hostrada4py.hostradaDiffuse import HostradaDiffuse
 from hostrada4py.hostradaPoint import CACHE_DIR, extract_multiple_values_for_point
 
 IDA_ICE_DEFAULT_COLUMNS = [
-    "Month",
-    "Day",
     "Hour",
     "DryBulb_C",
-    "RelHum_pct",
-    "DirectNormal_W_m2",
-    "DiffuseHorizontal_W_m2",
-    "WindDir_deg",
-    "WindSpeed_m_s",
-    "GlobalHorizontal_W_m2",
+    "RelHum",
+    "WindDirect",
+    "WindSpeed",
+    "DirectNormal",
+    "DiffuseHorizontal",
 ]
 
 
@@ -101,6 +92,40 @@ def _series_or_default(df: pd.DataFrame, column: str, default: float) -> pd.Seri
     return pd.Series(default, index=df.index, dtype=float)
 
 
+def _calculate_direct_normal_irradiance(
+    ghi: pd.Series,
+    dhi: pd.Series,
+    solar_zenith_deg: pd.Series,
+    *,
+    min_cos_zenith: float = 1.0e-6,
+) -> pd.Series:
+    """Calculate direct normal irradiance for IDA ICE.
+
+    HOSTRADA provides global horizontal irradiance. ``HostradaDiffuse`` estimates
+    diffuse horizontal irradiance. The direct component on the horizontal plane is
+    therefore ``GHI - DHI``. IDA ICE, however, expects direct normal irradiance in
+    column 6. This function converts the horizontal direct component to the beam
+    normal to the sun rays by dividing by ``cos(solar_zenith)``.
+
+    Values are set to zero at night and when the direct horizontal component is
+    not positive. This avoids writing direct-horizontal radiation by mistake and
+    keeps the generated PRN file compatible with the KALMAR.PRN column layout.
+    """
+    ghi = ghi.astype(float).clip(lower=0.0)
+    dhi = dhi.astype(float).clip(lower=0.0, upper=ghi)
+    direct_horizontal = (ghi - dhi).clip(lower=0.0)
+
+    cos_zenith = pd.Series(
+        np.cos(np.radians(solar_zenith_deg.astype(float).to_numpy())),
+        index=ghi.index,
+        dtype=float,
+    )
+
+    dni = direct_horizontal / cos_zenith.where(cos_zenith > min_cos_zenith)
+    dni = dni.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    return dni.clip(lower=0.0)
+
+
 def _prepare_ida_ice_dataframe(
     data: pd.DataFrame,
     lon: float,
@@ -108,11 +133,7 @@ def _prepare_ida_ice_dataframe(
     altitude: float | None,
     tz: str,
     apply_weather_correction: bool,
-    hour_convention: Literal["one_based", "zero_based"],
 ) -> pd.DataFrame:
-    if hour_convention not in {"one_based", "zero_based"}:
-        raise ValueError("hour_convention must be either 'one_based' or 'zero_based'.")
-
     data = _as_utc_index(data)
 
     model = HostradaDiffuse(
@@ -123,12 +144,27 @@ def _prepare_ida_ice_dataframe(
     )
     radiation = model.estimate(data, apply_weather_correction=apply_weather_correction)
 
-    # Use local civil time in the output table if a local timezone is requested.
+    # Use local civil time as dataframe index for consistency with the selected
+    # output time zone. The IDA ICE file itself uses a continuous hour counter.
     local_index = radiation.index.tz_convert(tz)
 
     ghi = _series_or_default(radiation, "global_radiation", np.nan)
     if ghi.isna().all() and "rsds" in radiation.columns:
         ghi = radiation["rsds"].astype(float)
+
+    dhi = _series_or_default(radiation, "dhi", 0.0).clip(lower=0.0, upper=ghi.clip(lower=0.0))
+
+    if "solar_zenith_deg" not in radiation.columns:
+        raise KeyError("Missing 'solar_zenith_deg'; cannot calculate direct normal irradiance.")
+
+    # IDA ICE expects DirectNormal in column 6. Calculate it here explicitly from
+    # direct horizontal irradiance and solar zenith, instead of writing the
+    # horizontal direct component.
+    dni = _calculate_direct_normal_irradiance(
+        ghi=ghi,
+        dhi=dhi,
+        solar_zenith_deg=radiation["solar_zenith_deg"],
+    )
 
     temp = _series_or_default(radiation, "temp_2m", np.nan)
     if temp.isna().all() and "tas" in radiation.columns:
@@ -138,20 +174,15 @@ def _prepare_ida_ice_dataframe(
     wind_speed = _series_or_default(radiation, "wind_speed_10m", 0.0)
     wind_dir = _series_or_default(radiation, "wind_dir_10m", 0.0)
 
-    hour = local_index.hour + 1 if hour_convention == "one_based" else local_index.hour
-
     out = pd.DataFrame(
         {
-            "Month": local_index.month,
-            "Day": local_index.day,
-            "Hour": hour,
+            "Hour": np.arange(len(radiation), dtype=int),
             "DryBulb_C": temp.to_numpy(dtype=float),
-            "RelHum_pct": rel_humidity.clip(lower=0.0, upper=100.0).to_numpy(dtype=float),
-            "DirectNormal_W_m2": radiation["dni"].clip(lower=0.0).to_numpy(dtype=float),
-            "DiffuseHorizontal_W_m2": radiation["dhi"].clip(lower=0.0).to_numpy(dtype=float),
-            "WindDir_deg": wind_dir.mod(360.0).to_numpy(dtype=float),
-            "WindSpeed_m_s": wind_speed.clip(lower=0.0).to_numpy(dtype=float),
-            "GlobalHorizontal_W_m2": ghi.clip(lower=0.0).to_numpy(dtype=float),
+            "RelHum": rel_humidity.clip(lower=0.0, upper=100.0).to_numpy(dtype=float),
+            "WindDirect": wind_dir.mod(360.0).to_numpy(dtype=float),
+            "WindSpeed": wind_speed.clip(lower=0.0).to_numpy(dtype=float),
+            "DirectNormal": dni.to_numpy(dtype=float),
+            "DiffuseHorizontal": dhi.to_numpy(dtype=float),
         },
         index=local_index,
     )
@@ -164,9 +195,9 @@ def write_ida_ice_prn(
     output_file: str | Path,
     *,
     include_header: bool = True,
-    float_format: str = "%.3f",
+    float_format: str = "%.2f",
 ) -> Path:
-    """Write an IDA-ICE-oriented whitespace-separated ``.prn`` weather table.
+    """Write an IDA ICE ``.prn`` weather table in KALMAR.PRN-compatible format.
 
     Parameters
     ----------
@@ -176,11 +207,10 @@ def write_ida_ice_prn(
     output_file:
         Target file path, usually ending in ``.prn``.
     include_header:
-        If True, write short comment lines and a column-name line before the
-        numeric data. Set to False for workflows that require numeric-only PRN
-        files.
+        If True, write the same comment-style header structure as the KALMAR.PRN
+        reference file. No extra pandas column header is written as data.
     float_format:
-        Numeric formatting passed to ``DataFrame.to_csv``.
+        Numeric formatting for all non-hour columns.
     """
     path = Path(output_file)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,16 +222,19 @@ def write_ida_ice_prn(
     with path.open("w", encoding="utf-8", newline="") as f:
         if include_header:
             f.write("# HOSTRADA weather file for IDA ICE\n")
-            f.write("# Columns: " + " ".join(IDA_ICE_DEFAULT_COLUMNS) + "\n")
-            f.write("# Units: - - h degC % W/m2 W/m2 deg m/s W/m2\n")
-        df.to_csv(
-            f,
-            sep=" ",
-            columns=IDA_ICE_DEFAULT_COLUMNS,
-            index=False,
-            header=include_header,
-            float_format=float_format,
-        )
+            f.write("# Columns: Hour DryBulb_C\tRelHum\tWindDirect\tWindSpeed DirectNormal DiffuseHorizontal\n")
+            f.write("# Units: h degC % deg m/s W/m2 W/m2\n")
+
+        for row in df[IDA_ICE_DEFAULT_COLUMNS].itertuples(index=False):
+            f.write(
+                f"{int(row.Hour):5d} "
+                f"{float(row.DryBulb_C):7.2f} "
+                f"{float(row.RelHum):7.2f} "
+                f"{float(row.WindDirect):7.2f} "
+                f"{float(row.WindSpeed):7.2f} "
+                f"{float(row.DirectNormal):7.2f} "
+                f"{float(row.DiffuseHorizontal):7.2f}\n"
+            )
 
     return path
 
@@ -216,7 +249,6 @@ def create_ida_ice_weather_dataframe(
     tz: str = "Europe/Berlin",
     cache_dir: str | Path = CACHE_DIR,
     apply_weather_correction: bool = False,
-    hour_convention: Literal["one_based", "zero_based"] = "one_based",
 ) -> pd.DataFrame:
     """Create the IDA ICE weather dataframe for one HOSTRADA grid point.
 
@@ -247,7 +279,6 @@ def create_ida_ice_weather_dataframe(
         altitude=altitude,
         tz=tz,
         apply_weather_correction=apply_weather_correction,
-        hour_convention=hour_convention,
     )
 
 
@@ -262,11 +293,17 @@ def create_ida_ice_weather_file(
     tz: str = "Europe/Berlin",
     cache_dir: str | Path = CACHE_DIR,
     apply_weather_correction: bool = False,
-    hour_convention: Literal["one_based", "zero_based"] = "one_based",
     include_header: bool = True,
-    float_format: str = "%.3f",
+    float_format: str = "%.2f",
 ) -> Path:
-    """Create an IDA ICE weather ``.prn`` file for a given point and period.
+    """Create an IDA ICE weather ``.prn`` file for a point and period.
+
+    The output follows the KALMAR.PRN-style IDA ICE format::
+
+        Hour DryBulb_C RelHum WindDirect WindSpeed DirectNormal DiffuseHorizontal
+
+    The sixth column is direct normal irradiance (DNI) in W/m2. It is calculated
+    explicitly from direct horizontal irradiance and solar zenith angle.
 
     Parameters
     ----------
@@ -281,19 +318,18 @@ def create_ida_ice_weather_file(
     altitude:
         Optional site altitude in metres, used for solar-position calculation.
     tz:
-        Time zone used for the output date/hour columns. The data are read in
-        UTC and converted to this timezone before writing.
+        Time zone used for the output index and solar-position calculation. The
+        IDA ICE output file itself uses a continuous hour counter starting at 0.
     cache_dir:
         Local HOSTRADA cache directory.
     apply_weather_correction:
         If True, download a few additional HOSTRADA variables and apply the
         conservative weather correction already implemented in ``HostradaDiffuse``.
-    hour_convention:
-        ``'one_based'`` writes hours 1..24. ``'zero_based'`` writes 0..23.
     include_header:
-        Write comment and column lines. Set to False for numeric-only import.
+        Write comment lines compatible with the KALMAR.PRN reference structure.
     float_format:
-        Numeric formatting for the output file.
+        Kept for API compatibility; output is formatted to two decimals to match
+        the KALMAR.PRN-style fixed-width numeric layout.
 
     Returns
     -------
@@ -309,7 +345,6 @@ def create_ida_ice_weather_file(
         tz=tz,
         cache_dir=cache_dir,
         apply_weather_correction=apply_weather_correction,
-        hour_convention=hour_convention,
     )
     return write_ida_ice_prn(
         df,
