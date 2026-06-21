@@ -18,14 +18,14 @@ The hourly grid data for the HOSTRADA parameters and UHI intensity can be downlo
 
 The HOSTRADA data set is expanded monthly and contains the following variables:
 
-* Cloud cover
-* Wind speed and direction (at a height of 10 m)
-* Air and dew point temperature (at a height of 2 m)
-* Relative humidity (at a height of 2 m)
-* Air pressure at station height and sea level
-* Water vapor mixing ratio (at a height of 2 m)
-* Global radiation and direct radiation
-* Urban Heat Island Intensity (UHI)
+* Cloud cover,
+* Wind speed and direction (at a height of 10 m),
+* Air and dew point temperature (at a height of 2 m),
+* Relative humidity (at a height of 2 m),
+* Air pressure at station height and sea level, 
+* Water vapor mixing ratio (at a height of 2 m),
+* Global radiation and direct radiation,
+* Urban Heat Island Intensity (UHI).
 
 ## The Python library hostrada4py
 The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. **hostrada.py** contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in **hostradaPoint.py** support the evaluation of weather data at a climate location specified by longitude and latitude, whereas **hostradaArea.py** provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
