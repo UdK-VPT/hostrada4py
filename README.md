@@ -108,12 +108,6 @@ packages support chunked/range access or an OPeNDAP/THREDDS/NCSS-like service.
 Therefore `http_range` is intentionally optional and falls back to the robust
 full download unless `HOSTRADA_NETCDF_SUBSET_FALLBACK=0` is set.
 
-Optional packages for `http_range` mode:
-
-```bash
-pip install fsspec h5netcdf
-```
-
 If disk space is more important than keeping the original full cache, the full
 monthly file can be removed after the subset file has been created:
 
