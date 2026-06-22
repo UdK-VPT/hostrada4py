@@ -24,7 +24,7 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 * Relative humidity (at a height of 2 m),
 * Air pressure at station height and sea level, 
 * Water vapor mixing ratio (at a height of 2 m),
-* Global radiation and direct radiation,
+* Global radiation,
 * Urban Heat Island Intensity (UHI).
 
 ## The Python library hostrada4py
