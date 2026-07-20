@@ -5,9 +5,15 @@ hostrada_IDA_ICE_Weather.py
 
 Create point-based weather files for IDA ICE from HOSTRADA data.
 
-The public helper ``create_ida_ice_weather_file`` writes a whitespace separated
-``.prn`` file for a user-defined period. The default output format follows the
-uploaded IDA ICE reference file ``KALMAR.PRN``.
+The public helper ``create_ida_ice_weather_file`` writes a fixed-width ``.prn``
+file for a user-defined period. Its default byte layout follows the IDA ICE weather file conventions:
+
+* no header lines,
+* seven numeric fields per row,
+* a five-character integer hour field,
+* six eight-character floating-point fields with two decimal places,
+* 53 ASCII characters per data row, and
+* Windows CRLF (``\r\n``) line endings, including after the final row.
 
 Default output columns
 ----------------------
@@ -109,7 +115,7 @@ def _calculate_direct_normal_irradiance(
 
     Values are set to zero at night and when the direct horizontal component is
     not positive. This avoids writing direct-horizontal radiation by mistake and
-    keeps the generated PRN file compatible with the KALMAR.PRN column layout.
+    keeps the generated PRN file compatible with the *.PRN column layout.
     """
     ghi = ghi.astype(float).clip(lower=0.0)
     dhi = dhi.astype(float).clip(lower=0.0, upper=ghi)
@@ -194,10 +200,14 @@ def write_ida_ice_prn(
     df: pd.DataFrame,
     output_file: str | Path,
     *,
-    include_header: bool = True,
+    include_header: bool = False,
     float_format: str = "%.2f",
 ) -> Path:
-    """Write an IDA ICE ``.prn`` weather table in KALMAR.PRN-compatible format.
+    """Write an IDA ICE weather table in the ``*.PRN`` byte format.
+
+    With the default arguments, the output contains no header and every data row
+    consists of exactly 53 ASCII characters followed by Windows CRLF. The layout
+    is equivalent to ``%5d%8.2f%8.2f%8.2f%8.2f%8.2f%8.2f``.
 
     Parameters
     ----------
@@ -207,11 +217,16 @@ def write_ida_ice_prn(
     output_file:
         Target file path, usually ending in ``.prn``.
     include_header:
-        If True, write the same comment-style header structure as the KALMAR.PRN
-        reference file. No extra pandas column header is written as data.
+        Defaults to False because ``*.PRN`` has no header. Setting this to
+        True writes three comment lines, also with CRLF.
     float_format:
-        Numeric formatting for all non-hour columns.
+        Retained for API compatibility. The exact KALMAR format requires ``%.2f``.
     """
+    if float_format != "%.2f":
+        raise ValueError(
+            "*.PRN compatibility requires float_format='%.2f'."
+        )
+
     path = Path(output_file)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -219,22 +234,52 @@ def write_ida_ice_prn(
     if missing:
         raise KeyError(f"Missing IDA ICE output columns: {missing}")
 
-    with path.open("w", encoding="utf-8", newline="") as f:
+    # Binary output makes the encoding and line ending independent of the host
+    # operating system. KALMAR(3).PRN is plain ASCII and uses CRLF after every row.
+    with path.open("wb") as f:
         if include_header:
-            f.write("# HOSTRADA weather file for IDA ICE\n")
-            f.write("# Columns: Hour DryBulb_C\tRelHum\tWindDirect\tWindSpeed DirectNormal DiffuseHorizontal\n")
-            f.write("# Units: h degC % deg m/s W/m2 W/m2\n")
-
-        for row in df[IDA_ICE_DEFAULT_COLUMNS].itertuples(index=False):
-            f.write(
-                f"{int(row.Hour):5d} "
-                f"{float(row.DryBulb_C):7.2f} "
-                f"{float(row.RelHum):7.2f} "
-                f"{float(row.WindDirect):7.2f} "
-                f"{float(row.WindSpeed):7.2f} "
-                f"{float(row.DirectNormal):7.2f} "
-                f"{float(row.DiffuseHorizontal):7.2f}\n"
+            header = (
+                "# HOSTRADA weather file for IDA ICE\r\n"
+                "# Columns: Hour DryBulb_C RelHum WindDirect WindSpeed "
+                "DirectNormal DiffuseHorizontal\r\n"
+                "# Units: h degC % deg m/s W/m2 W/m2\r\n"
             )
+            f.write(header.encode("ascii"))
+
+        for row_number, row in enumerate(
+            df[IDA_ICE_DEFAULT_COLUMNS].itertuples(index=False), start=1
+        ):
+            values = (
+                float(row.DryBulb_C),
+                float(row.RelHum),
+                float(row.WindDirect),
+                float(row.WindSpeed),
+                float(row.DirectNormal),
+                float(row.DiffuseHorizontal),
+            )
+            if not np.isfinite(values).all():
+                raise ValueError(
+                    f"Non-finite value in IDA ICE output row {row_number}."
+                )
+
+            line = (
+                f"{int(row.Hour):5d}"
+                f"{values[0]:8.2f}"
+                f"{values[1]:8.2f}"
+                f"{values[2]:8.2f}"
+                f"{values[3]:8.2f}"
+                f"{values[4]:8.2f}"
+                f"{values[5]:8.2f}"
+            )
+
+            # Overflowing field widths would silently destroy the fixed layout.
+            if len(line) != 53:
+                raise ValueError(
+                    "A value does not fit the fixed-width layout in "
+                    f"output row {row_number}: {line!r}"
+                )
+
+            f.write(line.encode("ascii") + b"\r\n")
 
     return path
 
@@ -293,14 +338,17 @@ def create_ida_ice_weather_file(
     tz: str = "Europe/Berlin",
     cache_dir: str | Path = CACHE_DIR,
     apply_weather_correction: bool = False,
-    include_header: bool = True,
+    include_header: bool = False,
     float_format: str = "%.2f",
 ) -> Path:
-    """Create an IDA ICE weather ``.prn`` file for a point and period.
+    """Create an IDA ICE weather ``*.prn`` file for a point and period.
 
-    The output follows the KALMAR.PRN-style IDA ICE format::
+    The output follows the exact numeric layout of ``KALMAR(3).PRN``::
 
         Hour DryBulb_C RelHum WindDirect WindSpeed DirectNormal DiffuseHorizontal
+
+    It has no header by default, uses fixed field widths and two decimal places,
+    and is written as ASCII with Windows CRLF line endings.
 
     The sixth column is direct normal irradiance (DNI) in W/m2. It is calculated
     explicitly from direct horizontal irradiance and solar zenith angle.
@@ -314,7 +362,7 @@ def create_ida_ice_weather_file(
         months intersecting the interval are considered, but the output is cut to
         the exact time interval.
     output_file:
-        Target path for the generated ``.prn`` file.
+        Target path for the generated ``*.prn`` file.
     altitude:
         Optional site altitude in metres, used for solar-position calculation.
     tz:
@@ -326,10 +374,9 @@ def create_ida_ice_weather_file(
         If True, download a few additional HOSTRADA variables and apply the
         conservative weather correction already implemented in ``HostradaDiffuse``.
     include_header:
-        Write comment lines compatible with the KALMAR.PRN reference structure.
+        Defaults to False, matching ``KALMAR(3).PRN``, which has no header.
     float_format:
-        Kept for API compatibility; output is formatted to two decimals to match
-        the KALMAR.PRN-style fixed-width numeric layout.
+        Must remain ``%.2f`` for the exact KALMAR fixed-width representation.
 
     Returns
     -------
