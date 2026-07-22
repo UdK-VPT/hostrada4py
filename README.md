@@ -36,9 +36,10 @@ For the largest 50 German cities and a couple of regions polygons are predefined
 The notebooks 
 
 * **hostradaPoint.ipynb** (time series of weather data for one location),
+* **hostradaPoint-diffRad.ipynb** (calculation of the diffuse radiation based of HOSTRADA values for one location),
+* **hostradaRoute.ipynb** (calculation of HOSTRADA values along a predefined route),
 * **hostradaArea.ipynb** (2D fields of weather data),
 * **hostradaAreaMean.ipynb** (mean values of 2D fields of weather data),
-* **hostradaPoint-diffRad.ipynb** (calculation of the diffuse radiation based of HOSTRADA values for one location),
 * **hostradaHeatPeriods.ipynb** (shows the locations with the most intensive heat periods in Germany within 1995 to 2026) and
 * **hostradaHeatingDegreeDays.ipynb** (calculation of heating degree days based of HOSTRADA values for one location) and
 * **hostradaGenerateWeatherFiles.ipynb** (generation of weather data files based of HOSTRADA values for one location for different simulation programs - IDA ICE, Polysun, EnergyPlus, SimStadt and the Modelica library BuildingSystems). 
