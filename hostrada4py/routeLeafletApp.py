@@ -33,11 +33,11 @@ class RoutePoint:
 
 @dataclass
 class RouteAppDefaults:
-    start_address: str = "Raabestraße 13, 10405 Berlin"
-    destination_address: str = "Klaushagen 33, 17268 Boitzenburger Land"
+    start_address: str = "Einsteinufer 43-53, 10587 Berlin"
+    destination_address: str = "München"
     start_time: str = ""
     average_speed_kmh: float = 50.0
-    interval_minutes: int = 5
+    interval_minutes: int = 15
     profile: str = "driving"
     language: str = "de"
     output_file: str = "route_positions.csv"
@@ -595,7 +595,7 @@ class RouteNotebookApp:
         )
         self.speed = FloatText(value=d.average_speed_kmh, description="Ø km/h:")
         self.interval = IntText(value=d.interval_minutes, description="Intervall min:")
-        self.profile = Dropdown(options=[("Auto","driving"),("Fahrrad","cycling"),("Zu Fuß","walking"),("Bahn/ÖPNV","train")],
+        self.profile = Dropdown(options=[("Car","driving"),("Bicycle","cycling"),("Pedestrian","walking"),("Train/Public traffic","train")],
                                 value=d.profile, description="Profil:")
         self.language = Text(value=d.language, description="Sprache:")
         self.output_file = Text(value=d.output_file, description="CSV-Datei:", layout=Layout(width="500px"))
