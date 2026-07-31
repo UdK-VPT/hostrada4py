@@ -29,6 +29,7 @@ Required installations:
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, List
 import re
@@ -40,7 +41,8 @@ import pandas as pd
 import xarray as xr
 from branca.colormap import LinearColormap, linear
 from pyproj import Transformer
-from shapely.geometry import Polygon
+import shapely
+from shapely.geometry import Polygon, box as geometry_box
 
 import hostrada4py.hostrada as hs
 
@@ -121,6 +123,75 @@ def normalize_xy_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename_map)
 
 
+@lru_cache(maxsize=8)
+def _get_transformer(source_crs: str, target_crs: str) -> Transformer:
+    """Cache CRS transformers because they are reused for every extraction/map."""
+    return Transformer.from_crs(source_crs, target_crs, always_xy=True)
+
+
+def _find_xy_dimensions(da: xr.DataArray) -> Tuple[str, str]:
+    """Return x/y dimension names for a rectilinear HOSTRADA DataArray."""
+    spatial_dims = [dim for dim in da.dims if dim.lower() != "time"]
+    if len(spatial_dims) != 2:
+        raise KeyError(
+            f"Expected exactly two spatial dimensions, found {tuple(da.dims)}."
+        )
+
+    x_candidates = [dim for dim in spatial_dims if dim.lower() == "x"]
+    y_candidates = [dim for dim in spatial_dims if dim.lower() == "y"]
+    if len(x_candidates) == 1 and len(y_candidates) == 1:
+        return x_candidates[0], y_candidates[0]
+
+    # HOSTRADA variables conventionally use (..., Y, X). Keep the former
+    # fallback behaviour for files whose dimensions have non-standard names.
+    return spatial_dims[1], spatial_dims[0]
+
+
+def _axis_values(da: xr.DataArray, dim: str) -> np.ndarray:
+    if dim not in da.coords:
+        raise KeyError(f"Spatial coordinate '{dim}' is missing.")
+    values = np.asarray(da.coords[dim].values)
+    if values.ndim != 1:
+        raise ValueError(
+            f"Expected a one-dimensional coordinate for '{dim}', got {values.ndim}D."
+        )
+    return values
+
+
+def _make_square_geometries(
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    cell_size: float = 1000.0,
+) -> np.ndarray:
+    """Create square geometries vectorially with a compatibility fallback."""
+    x_centers = np.asarray(x_centers, dtype=float)
+    y_centers = np.asarray(y_centers, dtype=float)
+    half = float(cell_size) / 2.0
+
+    vectorized_box = getattr(shapely, "box", None)
+    if vectorized_box is not None:
+        return np.asarray(
+            vectorized_box(
+                x_centers - half,
+                y_centers - half,
+                x_centers + half,
+                y_centers + half,
+            ),
+            dtype=object,
+        )
+
+    # Shapely < 2 compatibility. The candidate set has already been reduced to
+    # the polygon bounding box, so this fallback remains substantially faster
+    # than constructing every cell in the complete Germany grid.
+    return np.asarray(
+        [
+            geometry_box(x - half, y - half, x + half, y + half)
+            for x, y in zip(x_centers, y_centers)
+        ],
+        dtype=object,
+    )
+
+
 def make_square_polygon(x_center: float, y_center: float, cell_size: float = 1000.0) -> Polygon:
     half = cell_size / 2.0
     return Polygon([
@@ -136,10 +207,11 @@ def polygon_lonlat_to_epsg3034(points_lonlat: Sequence[Tuple[float, float]]) -> 
     if len(points_lonlat) < 3:
         raise ValueError("The polygon has to have a minimum of three vertices.")
 
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3034", always_xy=True)
-    points_3034 = [transformer.transform(lon, lat) for lon, lat in points_lonlat]
+    points = np.asarray(points_lonlat, dtype=float)
+    transformer = _get_transformer("EPSG:4326", "EPSG:3034")
+    x, y = transformer.transform(points[:, 0], points[:, 1])
+    poly = Polygon(np.column_stack((x, y)))
 
-    poly = Polygon(points_3034)
     if not poly.is_valid:
         poly = poly.buffer(0)
 
@@ -150,15 +222,21 @@ def polygon_lonlat_to_epsg3034(points_lonlat: Sequence[Tuple[float, float]]) -> 
 
 
 def transform_centers_to_lonlat(df: pd.DataFrame) -> pd.DataFrame:
-    transformer = Transformer.from_crs("EPSG:3034", "EPSG:4326", always_xy=True)
-    coords = df.apply(
-        lambda row: transformer.transform(row["grid_x_epsg3034"], row["grid_y_epsg3034"]),
-        axis=1,
+    """Transform all grid centres in one vectorized pyproj operation."""
+    result = df.copy()
+    if result.empty:
+        result["grid_lon"] = pd.Series(dtype=float)
+        result["grid_lat"] = pd.Series(dtype=float)
+        return result
+
+    transformer = _get_transformer("EPSG:3034", "EPSG:4326")
+    lon, lat = transformer.transform(
+        result["grid_x_epsg3034"].to_numpy(dtype=float, copy=False),
+        result["grid_y_epsg3034"].to_numpy(dtype=float, copy=False),
     )
-    df = df.copy()
-    df["grid_lon"] = [c[0] for c in coords]
-    df["grid_lat"] = [c[1] for c in coords]
-    return df
+    result["grid_lon"] = np.asarray(lon, dtype=float)
+    result["grid_lat"] = np.asarray(lat, dtype=float)
+    return result
 
 
 def prepare_static_grid_mask(
@@ -168,43 +246,190 @@ def prepare_static_grid_mask(
     selection_mode: str = "within",
 ) -> gpd.GeoDataFrame:
     """
-    Set up the grid once and estimates the cells which belong to the polygon.
+    Set up the grid once and determine the cells which belong to the polygon.
+
+    Only coordinate vectors inside the polygon bounding box are expanded into
+    grid cells. This avoids converting the complete HOSTRADA raster to a
+    DataFrame and avoids row-wise polygon construction.
     """
     var_name = hs.find_variable(var, ds)
     da0 = ds[var_name].isel(time=0)
-
-    grid_df = da0.to_dataframe(name=var_name).reset_index()
-    grid_df = normalize_xy_columns(grid_df)
-
-    needed = {"grid_x_epsg3034", "grid_y_epsg3034"}
-    missing = needed - set(grid_df.columns)
-    if missing:
-        raise KeyError(f"Fehlende Rasterspalten: {missing}")
-
-    grid_df = grid_df[list(needed)].drop_duplicates().copy()
-    grid_df["geometry"] = grid_df.apply(
-        lambda row: make_square_polygon(row["grid_x_epsg3034"], row["grid_y_epsg3034"]),
-        axis=1,
-    )
-
-    grid_gdf = gpd.GeoDataFrame(grid_df, geometry="geometry", crs="EPSG:3034")
+    x_dim, y_dim = _find_xy_dimensions(da0)
+    x_values = _axis_values(da0, x_dim)
+    y_values = _axis_values(da0, y_dim)
 
     polygon_3034 = polygon_lonlat_to_epsg3034(polygon_lonlat)
-
     minx, miny, maxx, maxy = polygon_3034.bounds
-    grid_gdf = grid_gdf.cx[minx:maxx, miny:maxy].copy()
+
+    # The geometry-based .cx selection used previously also admitted cells that
+    # touched the bbox. Expanding by half a 1-km cell reproduces that candidate
+    # set before the exact topological predicate is applied.
+    half_cell = 500.0
+    x_candidates = x_values[
+        (x_values >= minx - half_cell) & (x_values <= maxx + half_cell)
+    ]
+    y_candidates = y_values[
+        (y_values >= miny - half_cell) & (y_values <= maxy + half_cell)
+    ]
+
+    if x_candidates.size == 0 or y_candidates.size == 0:
+        return gpd.GeoDataFrame(
+            columns=["grid_x_epsg3034", "grid_y_epsg3034", "geometry"],
+            geometry="geometry",
+            crs="EPSG:3034",
+        )
+
+    x_grid, y_grid = np.meshgrid(x_candidates, y_candidates)
+    x_flat = x_grid.ravel()
+    y_flat = y_grid.ravel()
+    geometries = _make_square_geometries(x_flat, y_flat)
+
+    grid_gdf = gpd.GeoDataFrame(
+        {
+            "grid_x_epsg3034": x_flat,
+            "grid_y_epsg3034": y_flat,
+        },
+        geometry=gpd.GeoSeries(geometries, crs="EPSG:3034"),
+        crs="EPSG:3034",
+    )
 
     if selection_mode == "within":
         mask = grid_gdf.geometry.within(polygon_3034)
     elif selection_mode == "intersects":
         mask = grid_gdf.geometry.intersects(polygon_3034)
     elif selection_mode == "centroid":
-        mask = grid_gdf.geometry.centroid.within(polygon_3034)
+        # The square centres are exactly the raster coordinates. Creating point
+        # objects is faster than calculating centroids of every square.
+        vectorized_points = getattr(shapely, "points", None)
+        if vectorized_points is not None:
+            centres = gpd.GeoSeries(
+                vectorized_points(x_flat, y_flat), crs="EPSG:3034"
+            )
+        else:
+            centres = grid_gdf.geometry.centroid
+        mask = centres.within(polygon_3034)
     else:
         raise ValueError("selection_mode muss 'within', 'intersects' oder 'centroid' sein.")
 
     selected_grid = grid_gdf.loc[mask].copy()
+    selected_grid = selected_grid.sort_values(
+        ["grid_y_epsg3034", "grid_x_epsg3034"], kind="stable"
+    ).reset_index(drop=True)
     return selected_grid
+
+
+def _coordinate_positions(
+    axis_values: np.ndarray,
+    selected_values: np.ndarray,
+    axis_name: str,
+) -> np.ndarray:
+    """Map selected coordinate values to positional xarray indices."""
+    positions = pd.Index(axis_values).get_indexer(selected_values)
+    if np.any(positions < 0):
+        missing = selected_values[positions < 0][:5]
+        raise KeyError(
+            f"Selected {axis_name} coordinates are missing in a monthly file: "
+            f"{missing.tolist()}"
+        )
+    return positions.astype(np.intp, copy=False)
+
+
+def _extract_selected_matrix(
+    da: xr.DataArray,
+    selected_grid: gpd.GeoDataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> Tuple[pd.DatetimeIndex, np.ndarray]:
+    """Load only the selected polygon cells as a time-by-cell NumPy matrix."""
+    da = da.sel(
+        time=slice(start_ts.tz_localize(None), end_ts.tz_localize(None))
+    )
+    if da.sizes.get("time", 0) == 0:
+        return pd.DatetimeIndex([]), np.empty((0, len(selected_grid)), dtype=float)
+
+    x_dim, y_dim = _find_xy_dimensions(da)
+    x_values = _axis_values(da, x_dim)
+    y_values = _axis_values(da, y_dim)
+
+    selected_x = selected_grid["grid_x_epsg3034"].to_numpy(copy=False)
+    selected_y = selected_grid["grid_y_epsg3034"].to_numpy(copy=False)
+    x_positions = _coordinate_positions(x_values, selected_x, x_dim)
+    y_positions = _coordinate_positions(y_values, selected_y, y_dim)
+
+    cell_dim = "__hostrada_cell"
+    selected = da.isel(
+        {
+            x_dim: xr.DataArray(x_positions, dims=cell_dim),
+            y_dim: xr.DataArray(y_positions, dims=cell_dim),
+        }
+    ).transpose("time", cell_dim)
+
+    values = selected.to_numpy()
+    if np.ma.isMaskedArray(values):
+        values = values.filled(np.nan)
+    values = np.asarray(values)
+
+    times = pd.DatetimeIndex(pd.to_datetime(selected["time"].to_numpy()))
+    if not times.is_monotonic_increasing:
+        order = np.argsort(times.asi8, kind="stable")
+        times = times.take(order)
+        values = values[order]
+
+    return times, values
+
+
+def _matrix_to_long_frame(
+    times: pd.DatetimeIndex,
+    values: np.ndarray,
+    selected_grid: gpd.GeoDataFrame,
+    value_column: str,
+) -> pd.DataFrame:
+    n_times, n_cells = values.shape
+    if n_times == 0 or n_cells == 0:
+        return pd.DataFrame(
+            columns=[
+                "time",
+                "grid_y_epsg3034",
+                "grid_x_epsg3034",
+                value_column,
+                "__hostrada_cell",
+            ]
+        )
+
+    return pd.DataFrame(
+        {
+            "time": np.repeat(times.to_numpy(), n_cells),
+            "grid_y_epsg3034": np.tile(
+                selected_grid["grid_y_epsg3034"].to_numpy(copy=False), n_times
+            ),
+            "grid_x_epsg3034": np.tile(
+                selected_grid["grid_x_epsg3034"].to_numpy(copy=False), n_times
+            ),
+            value_column: values.reshape(-1),
+            "__hostrada_cell": np.tile(np.arange(n_cells, dtype=np.intp), n_times),
+        }
+    )
+
+def _empty_polygon_values_result(
+    value_column: Optional[str],
+    selection_mode: str,
+    return_geodataframe: bool,
+) -> gpd.GeoDataFrame | pd.DataFrame:
+    columns = [
+        "time",
+        "grid_x_epsg3034",
+        "grid_y_epsg3034",
+        value_column or "value",
+        "selection_mode",
+        "geometry",
+    ]
+    if return_geodataframe:
+        return gpd.GeoDataFrame(
+            columns=columns,
+            geometry="geometry",
+            crs="EPSG:3034",
+        )
+    return pd.DataFrame(columns=[col for col in columns if col != "geometry"])
 
 
 def extract_values_for_polygon(
@@ -218,14 +443,15 @@ def extract_values_for_polygon(
     cache_strategy: Optional[str] = None,
     subset_margin_cells: Optional[int] = None,
 ) -> gpd.GeoDataFrame | pd.DataFrame:
+    """Extract hourly values while loading only cells selected by the polygon."""
     start_ts = pd.Timestamp(start_utc, tz="UTC")
     end_ts = pd.Timestamp(end_utc, tz="UTC")
 
     if end_ts < start_ts:
         raise ValueError("'end_utc' must >= 'start_utc'.")
 
-    selected_grid = None
-    frames: List[gpd.GeoDataFrame] = []
+    selected_grid: Optional[gpd.GeoDataFrame] = None
+    frames: List[pd.DataFrame] = []
     var_name: Optional[str] = None
     polygon_3034_bbox = polygon_lonlat_to_epsg3034(polygon_lonlat).bounds
 
@@ -253,67 +479,106 @@ def extract_values_for_polygon(
                     polygon_lonlat=polygon_lonlat,
                     selection_mode=selection_mode,
                 )
-
                 if selected_grid.empty:
-                    if return_geodataframe:
-                        return gpd.GeoDataFrame(
-                            columns=[
-                                "time",
-                                "grid_x_epsg3034",
-                                "grid_y_epsg3034",
-                                var_name,
-                                "selection_mode",
-                                "geometry",
-                            ],
-                            geometry="geometry",
-                            crs="EPSG:3034",
-                        )
-                    return pd.DataFrame()
+                    return _empty_polygon_values_result(
+                        var_name, selection_mode, return_geodataframe
+                    )
 
-            da = ds[var_name].sel(
-                time=slice(start_ts.tz_localize(None), end_ts.tz_localize(None))
+            times, matrix = _extract_selected_matrix(
+                ds[var_name], selected_grid, start_ts, end_ts
+            )
+            if len(times) == 0:
+                continue
+            frames.append(
+                _matrix_to_long_frame(times, matrix, selected_grid, var_name)
             )
 
-            values_df = da.to_dataframe(name=var_name).reset_index()
-            values_df = normalize_xy_columns(values_df)
+    if not frames or selected_grid is None:
+        return _empty_polygon_values_result(
+            var_name or var, selection_mode, return_geodataframe
+        )
 
-            merged = values_df.merge(
-                selected_grid[["grid_x_epsg3034", "grid_y_epsg3034", "geometry"]],
-                on=["grid_x_epsg3034", "grid_y_epsg3034"],
-                how="inner",
-            )
+    result = pd.concat(frames, ignore_index=True, copy=False)
 
-            month_gdf = gpd.GeoDataFrame(merged, geometry="geometry", crs="EPSG:3034")
-            month_gdf["selection_mode"] = selection_mode
-            frames.append(month_gdf)
+    # Monthly HOSTRADA files normally contain disjoint, ordered timestamps. The
+    # conditional check preserves the former duplicate-removal semantics without
+    # always performing an expensive full sort/drop operation.
+    duplicate_keys = ["time", "grid_x_epsg3034", "grid_y_epsg3034"]
+    duplicate_mask = result.duplicated(subset=duplicate_keys, keep="first")
+    if duplicate_mask.any():
+        result = result.loc[~duplicate_mask].copy()
 
-    if not frames:
-        if return_geodataframe:
-            return gpd.GeoDataFrame(
-                columns=[
-                    "time",
-                    "grid_x_epsg3034",
-                    "grid_y_epsg3034",
-                    var_name,
-                    "selection_mode",
-                    "geometry",
-                ],
-                geometry="geometry",
-                crs="EPSG:3034",
-            )
-        return pd.DataFrame()
+    cell_indices = result["__hostrada_cell"].to_numpy(dtype=np.intp, copy=False)
+    transformed_centres = transform_centers_to_lonlat(
+        selected_grid[["grid_x_epsg3034", "grid_y_epsg3034"]]
+    )
+    result["grid_lon"] = transformed_centres["grid_lon"].to_numpy()[cell_indices]
+    result["grid_lat"] = transformed_centres["grid_lat"].to_numpy()[cell_indices]
 
-    result = pd.concat(frames, ignore_index=True)
-    result = result.drop_duplicates(
-        subset=["time", "grid_x_epsg3034", "grid_y_epsg3034"]
-    ).sort_values(["time", "grid_y_epsg3034", "grid_x_epsg3034"]).reset_index(drop=True)
+    if return_geodataframe:
+        result["geometry"] = selected_grid.geometry.to_numpy()[cell_indices]
 
-    result = transform_centers_to_lonlat(result)
+    result = result.drop(columns="__hostrada_cell")
+    result["selection_mode"] = selection_mode
+
+    # Retain the public column order of the previous implementation.
+    ordered_columns = [
+        "time",
+        "grid_y_epsg3034",
+        "grid_x_epsg3034",
+        var_name or var,
+    ]
+    if return_geodataframe:
+        ordered_columns.append("geometry")
+    ordered_columns.extend(["selection_mode", "grid_lon", "grid_lat"])
+    remaining_columns = [
+        col for col in result.columns if col not in ordered_columns
+    ]
+    result = result[ordered_columns + remaining_columns].reset_index(drop=True)
 
     if return_geodataframe:
         return gpd.GeoDataFrame(result, geometry="geometry", crs="EPSG:3034")
+    return pd.DataFrame(result)
 
-    return pd.DataFrame(result.drop(columns="geometry"))
+
+def _numeric_matrix(values: np.ndarray) -> np.ndarray:
+    """Convert an extracted matrix to floating point while retaining NaNs."""
+    if np.issubdtype(values.dtype, np.number):
+        return values.astype(float, copy=False)
+    converted = pd.to_numeric(
+        pd.Series(values.reshape(-1)), errors="coerce"
+    ).to_numpy(dtype=float)
+    return converted.reshape(values.shape)
+
+
+def _empty_mean_result(
+    var: str,
+    mean_column: Optional[str],
+    include_statistics: bool,
+    return_geodataframe: bool,
+) -> gpd.GeoDataFrame | pd.DataFrame:
+    value_col = mean_column or var
+    columns = [
+        "time",
+        "grid_x_epsg3034",
+        "grid_y_epsg3034",
+        value_col,
+        "time_start",
+        "time_end",
+        "time_count",
+        "selection_mode",
+        "geometry",
+    ]
+    if include_statistics:
+        columns[4:4] = [
+            f"{var}_min",
+            f"{var}_max",
+            f"{var}_std",
+        ]
+    empty = gpd.GeoDataFrame(columns=columns, geometry="geometry", crs="EPSG:3034")
+    if return_geodataframe:
+        return empty
+    return pd.DataFrame(empty.drop(columns="geometry"))
 
 
 def extract_mean_values_for_polygon(
@@ -337,6 +602,10 @@ def extract_mean_values_for_polygon(
     mean is written back into the HOSTRADA value column. If a separate column
     name is desired, set mean_column, e.g. mean_column="tas_mean".
 
+    Statistics are accumulated directly from monthly time-by-cell arrays. This
+    avoids a potentially very large intermediate GeoDataFrame containing one
+    repeated geometry per hour and grid cell.
+
     Parameters:
     - var: HOSTRADA variable or alias, e.g. "tas"
     - polygon_lonlat: Polygon vertices as (lon, lat) points in EPSG:4326
@@ -352,128 +621,192 @@ def extract_mean_values_for_polygon(
     - Per cell: temporal mean over the period, cell center coordinates,
       selection mode, period start/end, and geometry when return_geodataframe=True
     """
-    values = extract_values_for_polygon(
-        var=var,
-        polygon_lonlat=polygon_lonlat,
-        start_utc=start_utc,
-        end_utc=end_utc,
-        cache_dir=cache_dir,
-        selection_mode=selection_mode,
-        return_geodataframe=True,
-        cache_strategy=cache_strategy,
-        subset_margin_cells=subset_margin_cells,
-    )
+    start_ts = pd.Timestamp(start_utc, tz="UTC")
+    end_ts = pd.Timestamp(end_utc, tz="UTC")
+    if end_ts < start_ts:
+        raise ValueError("'end_utc' must >= 'start_utc'.")
 
-    if values.empty:
-        value_col = mean_column or var
-        columns = [
-            "time",
-            "grid_x_epsg3034",
-            "grid_y_epsg3034",
-            value_col,
-            "time_start",
-            "time_end",
-            "time_count",
-            "selection_mode",
-            "geometry",
-        ]
-        if include_statistics:
-            columns[4:4] = [
-                f"{var}_min",
-                f"{var}_max",
-                f"{var}_std",
-            ]
-        empty = gpd.GeoDataFrame(columns=columns, geometry="geometry", crs="EPSG:3034")
-        if return_geodataframe:
-            return empty
-        return pd.DataFrame(empty.drop(columns="geometry"))
+    polygon_3034_bbox = polygon_lonlat_to_epsg3034(polygon_lonlat).bounds
+    selected_grid: Optional[gpd.GeoDataFrame] = None
+    var_name: Optional[str] = None
 
-    values = values.copy()
+    total_count: Optional[np.ndarray] = None
+    running_mean: Optional[np.ndarray] = None
+    running_m2: Optional[np.ndarray] = None
+    running_min: Optional[np.ndarray] = None
+    running_max: Optional[np.ndarray] = None
+    period_start: Optional[pd.Timestamp] = None
+    period_end: Optional[pd.Timestamp] = None
+    source_dtype: Optional[np.dtype] = None
 
-    if var in values.columns:
-        value_col = var
-    else:
-        metadata_cols = {
-            "time",
-            "grid_x_epsg3034",
-            "grid_y_epsg3034",
-            "grid_lon",
-            "grid_lat",
-            "selection_mode",
-            "geometry",
-        }
-        value_candidates = [
-            col for col in values.columns
-            if col not in metadata_cols and pd.api.types.is_numeric_dtype(values[col])
-        ]
-        if len(value_candidates) != 1:
-            raise KeyError(
-                f"Value column for var='{var}' could not be determined. "
-                f"Candidates: {value_candidates}"
+    for year, month in hs.month_range(start_ts, end_ts):
+        target = hs.ensure_month_file_for_bbox(
+            var,
+            year,
+            month,
+            cache_dir,
+            bbox_epsg3034=polygon_3034_bbox,
+            start=start_ts,
+            end=end_ts,
+            subset_mode=cache_strategy,
+            subset_margin_cells=subset_margin_cells,
+        )
+
+        print(f"Lese Datei: {target}")
+        with hs.read_month_file(target) as ds:
+            var_name = hs.find_variable(var, ds)
+            if selected_grid is None:
+                selected_grid = prepare_static_grid_mask(
+                    var=var,
+                    ds=ds,
+                    polygon_lonlat=polygon_lonlat,
+                    selection_mode=selection_mode,
+                )
+                if selected_grid.empty:
+                    return _empty_mean_result(
+                        var, mean_column, include_statistics, return_geodataframe
+                    )
+
+                n_cells = len(selected_grid)
+                total_count = np.zeros(n_cells, dtype=np.int64)
+                running_mean = np.zeros(n_cells, dtype=float)
+                running_m2 = np.zeros(n_cells, dtype=float)
+                running_min = np.full(n_cells, np.nan, dtype=float)
+                running_max = np.full(n_cells, np.nan, dtype=float)
+
+            times, raw_matrix = _extract_selected_matrix(
+                ds[var_name], selected_grid, start_ts, end_ts
             )
-        value_col = value_candidates[0]
+            if len(times) == 0:
+                continue
 
+            current_start = pd.Timestamp(times[0])
+            current_end = pd.Timestamp(times[-1])
+            period_start = current_start if period_start is None else min(period_start, current_start)
+            period_end = current_end if period_end is None else max(period_end, current_end)
+
+            if source_dtype is None:
+                source_dtype = np.asarray(raw_matrix).dtype
+            matrix = _numeric_matrix(raw_matrix)
+            valid = ~np.isnan(matrix)
+            month_count = valid.sum(axis=0, dtype=np.int64)
+            has_values = month_count > 0
+            if not has_values.any():
+                continue
+
+            safe_matrix = np.where(valid, matrix, 0.0)
+            month_sum = safe_matrix.sum(axis=0, dtype=float)
+            month_mean = np.zeros_like(month_sum)
+            np.divide(month_sum, month_count, out=month_mean, where=has_values)
+
+            deviations = np.where(valid, matrix - month_mean, 0.0)
+            month_m2 = np.square(deviations).sum(axis=0, dtype=float)
+
+            month_min = np.min(np.where(valid, matrix, np.inf), axis=0)
+            month_max = np.max(np.where(valid, matrix, -np.inf), axis=0)
+            month_min[~has_values] = np.nan
+            month_max[~has_values] = np.nan
+
+            old_count = total_count.copy()
+            new_count = old_count + month_count
+            combine = has_values
+            delta = month_mean - running_mean
+
+            running_mean[combine] += (
+                delta[combine]
+                * month_count[combine]
+                / new_count[combine]
+            )
+            running_m2[combine] += (
+                month_m2[combine]
+                + np.square(delta[combine])
+                * old_count[combine]
+                * month_count[combine]
+                / new_count[combine]
+            )
+            total_count = new_count
+            running_min = np.fmin(running_min, month_min)
+            running_max = np.fmax(running_max, month_max)
+
+    if (
+        selected_grid is None
+        or total_count is None
+        or running_mean is None
+        or period_start is None
+        or period_end is None
+    ):
+        return _empty_mean_result(
+            var, mean_column, include_statistics, return_geodataframe
+        )
+
+    value_col = var_name or var
     output_mean_col = mean_column or value_col
-    values[value_col] = pd.to_numeric(values[value_col], errors="coerce")
-    values["time"] = pd.to_datetime(values["time"], utc=True, errors="coerce").dt.tz_localize(None)
+    means = running_mean.copy()
+    means[total_count == 0] = np.nan
 
-    group_cols = ["grid_x_epsg3034", "grid_y_epsg3034"]
-    agg_map = {
-        output_mean_col: (value_col, "mean"),
-        "time": ("time", "max"),
-        "time_start": ("time", "min"),
-        "time_end": ("time", "max"),
-        "time_count": (value_col, "count"),
-        "selection_mode": ("selection_mode", "first"),
-    }
+    result = pd.DataFrame(
+        {
+            "grid_x_epsg3034": selected_grid["grid_x_epsg3034"].to_numpy(copy=False),
+            "grid_y_epsg3034": selected_grid["grid_y_epsg3034"].to_numpy(copy=False),
+            output_mean_col: means,
+            "time": period_end,
+            "time_start": period_start,
+            "time_end": period_end,
+            "time_count": total_count,
+            "selection_mode": selection_mode,
+        }
+    )
 
     if include_statistics:
-        agg_map.update({
-            f"{value_col}_min": (value_col, "min"),
-            f"{value_col}_max": (value_col, "max"),
-            f"{value_col}_std": (value_col, "std"),
-        })
+        std = np.full(len(result), np.nan, dtype=float)
+        enough_values = total_count > 1
+        std[enough_values] = np.sqrt(
+            np.maximum(running_m2[enough_values], 0.0)
+            / (total_count[enough_values] - 1)
+        )
+        result[f"{value_col}_min"] = running_min
+        result[f"{value_col}_max"] = running_max
+        result[f"{value_col}_std"] = std
 
-    if "grid_lon" in values.columns:
-        agg_map["grid_lon"] = ("grid_lon", "first")
-    if "grid_lat" in values.columns:
-        agg_map["grid_lat"] = ("grid_lat", "first")
-    if "geometry" in values.columns:
-        agg_map["geometry"] = ("geometry", "first")
+    # pandas preserves float32 for grouped float32 climate values. Retain that
+    # public dtype while using float64 internally for numerically stable running
+    # statistics.
+    if source_dtype is not None and np.issubdtype(source_dtype, np.floating):
+        result[output_mean_col] = result[output_mean_col].astype(source_dtype)
+        if include_statistics:
+            for statistic in ("min", "max", "std"):
+                result[f"{value_col}_{statistic}"] = result[
+                    f"{value_col}_{statistic}"
+                ].astype(source_dtype)
 
-    result = (
-        values.groupby(group_cols, as_index=False)
-        .agg(**agg_map)
-        .sort_values(["grid_y_epsg3034", "grid_x_epsg3034"])
-        .reset_index(drop=True)
-    )
+    result = transform_centers_to_lonlat(result)
 
     if return_geodataframe:
+        result["geometry"] = selected_grid.geometry.to_numpy()
         return gpd.GeoDataFrame(result, geometry="geometry", crs="EPSG:3034")
 
-    if "geometry" in result.columns:
-        result = result.drop(columns="geometry")
     return pd.DataFrame(result)
 
-
 def summarize_values_period(gdf_or_df: gpd.GeoDataFrame | pd.DataFrame, var: str) -> pd.DataFrame:
-    """
-    Calculates an hourly time series of area mean values of the polygon.
-    """
-    df = pd.DataFrame(gdf_or_df).copy()
+    """Calculate the hourly area statistics without copying geometry columns."""
+    if "time" not in gdf_or_df.columns:
+        raise KeyError("The 'time' column is missing.")
+    if var not in gdf_or_df.columns:
+        raise KeyError(f"The '{var}' column is missing.")
 
+    # Selecting only the two required columns avoids copying the often very
+    # large and expensive Shapely geometry array into an intermediate frame.
+    df = pd.DataFrame(gdf_or_df.loc[:, ["time", var]])
     summary = (
-        df.groupby("time", as_index=False)
+        df.groupby("time", as_index=False, sort=True, observed=True)
         .agg(
             value_mean=(var, "mean"),
             value_min=(var, "min"),
             value_max=(var, "max"),
             cell_count=(var, "count"),
         )
-        .sort_values("time")
         .reset_index(drop=True)
     )
-
     return summary
 
 

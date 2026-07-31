@@ -266,7 +266,7 @@ def create_weather_timeseries_figure(file_key):
     data, radiation_unit = cfg["reader"](path)
     data = data.dropna(subset=["time"])
     if data.empty:
-        raise ValueError(f"No usable time series data found in {cfg[‘file_name’]}.")
+        raise ValueError(f"No usable time series data found in {cfg['file_name']}.")
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
