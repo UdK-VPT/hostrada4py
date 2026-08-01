@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-label="Abstract climate and weather data background">
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38aeb5" stop-opacity=".46"/>
+      <stop offset=".52" stop-color="#75cba8" stop-opacity=".26"/>
+      <stop offset="1" stop-color="#e5a83b" stop-opacity=".38"/>
+    </linearGradient>
+    <radialGradient id="heat" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ff765e" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#ff765e" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse">
+      <path d="M42 0H0V42" fill="none" stroke="#24717b" stroke-opacity=".20" stroke-width="1.2"/>
+      <circle cx="1" cy="1" r="1.6" fill="#24717b" fill-opacity=".22"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="700" fill="url(#grid)"/>
+  <circle cx="760" cy="365" r="210" fill="url(#heat)"/>
+  <g fill="none" stroke="#24717b" stroke-opacity=".34" stroke-width="2.6">
+    <path d="M-40 150C120 20 270 280 440 135S760 10 925 135s300 85 355-5"/>
+    <path d="M-60 215C105 90 270 345 450 205S770 80 940 205s290 75 340 0"/>
+    <path d="M-70 525c170-125 330 110 505-20s340-135 505-5 285 90 345 25"/>
+    <path d="M-70 595c180-110 345 100 520-15s335-120 500-5 280 80 340 20"/>
+  </g>
+  <g fill="none" stroke="url(#fade)" stroke-width="7" stroke-linecap="round">
+    <path d="M125 385c95-115 190-115 285 0s190 115 285 0 190-115 285 0"/>
+  </g>
+  <g transform="translate(930 80)">
+    <circle cx="72" cy="72" r="38" fill="#ffca6a" fill-opacity=".38"/>
+    <g stroke="#b77a18" stroke-opacity=".48" stroke-width="3.5" stroke-linecap="round">
+      <path d="M72 13v-13M72 144v13M13 72H0M144 72h13M30 30 20 20M114 114l10 10M114 30l10-10M30 114l-10 10"/>
+    </g>
+  </g>
+  <g transform="translate(110 70)" fill="#5fd3d5" fill-opacity=".24" stroke="#24717b" stroke-opacity=".36" stroke-width="2.8">
+    <path d="M47 0C19 32 0 58 0 84c0 29 22 51 50 51s50-22 50-51C100 58 81 32 53 0l-3-4-3 4Z"/>
+  </g>
+  <g fill="#24717b" fill-opacity=".34">
+    <circle cx="210" cy="570" r="5"/><circle cx="250" cy="570" r="5"/><circle cx="290" cy="570" r="5"/>
+    <circle cx="210" cy="610" r="5"/><circle cx="250" cy="610" r="5"/><circle cx="290" cy="610" r="5"/>
+  </g>
+  <g fill="none" stroke="#24717b" stroke-opacity=".30" stroke-width="2">
+    <path d="M530 80h120M545 96h90M560 112h60"/>
+    <path d="M1010 500c32-22 68-22 100 0M990 530c46-30 98-30 144 0M970 564c60-38 126-38 186 0"/>
+  </g>
+</svg>
