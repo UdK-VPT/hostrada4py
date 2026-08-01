@@ -6,7 +6,9 @@ hostrada4Py is a Python library with access and for evaluation of the HOSTRADA w
 ## Installation
 
 ```bash
-pip install numpy pandas requests xarray netcdf4 h5netcdf pyproj shapely geopandas branca folium ipython ipywidgets ipyleaflet matplotlib seaborn plotly pvlib fsspec
+$ git clone https://github.com/UdK-VPT/hostrada4py.git
+$ cd hostrada4py
+$ pip install -e .
 ```
 
 ## The HOSTRADA project of DWD
