@@ -1,5 +1,7 @@
 # hostrada4py
-hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data from the DWD (Deutscher Wetterdienst).
+hostrada4Py is an Open Source Python library with access and for evaluation of the HOSTRADA weather data from the DWD (Deutscher Wetterdienst).
+
+[hostrada4py](https://udk-vpt.github.io/hostrada4py/index.html) is developed by the Chair of Building Services Engineering [VPT](https://www.udk-berlin.de/studium/architektur/fachgebiete/versorgungsplanung-und-versorgungstechnik/) at Berlin University of the Arts.
 
 ![Berlin_UHI_HOSTRADA](https://github.com/UdK-VPT/hostrada4py/blob/main/img/Berlin_UHI_HOSTRADA.png)
 
