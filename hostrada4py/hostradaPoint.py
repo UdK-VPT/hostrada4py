@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Point extraction independent of the original weather-data provider.
 
-The public 0.42.0 call patterns remain valid. Data access is routed through
+Data access is routed through
 :mod:`hostrada4py.hostrada`; DWD is the default and CERRA can be selected with
 ``HOSTRADA_PROVIDER=cerra`` or ``hostrada.use_provider('cerra')``.
 """
