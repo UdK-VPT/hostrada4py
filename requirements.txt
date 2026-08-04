@@ -8,15 +8,12 @@ shapely
 geopandas
 branca
 folium
-
 ipython
 ipywidgets
 ipyleaflet
-
 matplotlib
 seaborn
 plotly
 pvlib
-
-fsspec 
+fsspec
 h5netcdf

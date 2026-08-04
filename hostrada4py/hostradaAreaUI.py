@@ -21,6 +21,8 @@ from ipyleaflet import (
 )
 from shapely.geometry import Polygon
 
+from . import hostrada as hs
+
 
 class HostradaAreaUI:
     """Leaflet-based area selector and UTC-period selector for HOSTRADA."""
@@ -246,16 +248,20 @@ class HostradaAreaUI:
             normalised.append(normalised[0])
         return normalised
 
+    def _inside_provider_domain(self, lon: float, lat: float) -> bool:
+        if hs.get_provider_name() == "dwd":
+            min_lon, max_lon, min_lat, max_lat = self.GERMANY_BOUNDS
+            return min_lon <= float(lon) <= max_lon and min_lat <= float(lat) <= max_lat
+        return -45.0 <= float(lon) <= 75.0 and 20.0 <= float(lat) <= 80.0
+
     def _validate_custom_polygon(
         self, points: Sequence[Sequence[float]]
     ) -> list[tuple[float, float]]:
         points = self._normalise_polygon(points)
-        min_lon, max_lon, min_lat, max_lat = self.GERMANY_BOUNDS
-
         outside = [
             (lon, lat)
             for lon, lat in points
-            if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat)
+            if not self._inside_provider_domain(lon, lat)
         ]
         if outside:
             raise ValueError("Please define the polygon within Germany.")
@@ -415,8 +421,7 @@ class HostradaAreaUI:
             self._finish_custom_polygon()
             return
 
-        min_lon, max_lon, min_lat, max_lat = self.GERMANY_BOUNDS
-        if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
+        if not self._inside_provider_domain(lon, lat):
             self.area_status.value = (
                 "<b>Point not accepted:</b> Please click within Germany. "
                 + self._drawing_instruction()

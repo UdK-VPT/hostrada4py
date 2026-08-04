@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import os
+import time
 from pathlib import Path
 from collections.abc import Callable, MutableMapping
 from typing import Any
@@ -18,7 +19,10 @@ from typing import Any
 import pandas as pd
 import requests
 import ipywidgets as widgets
+from IPython.display import display
 from ipyleaflet import Map, Marker, basemaps
+
+from . import hostrada as hs
 
 
 GERMANY_BOUNDS = {
@@ -28,9 +32,52 @@ GERMANY_BOUNDS = {
     "lat_max": 55.5,
 }
 
+# ISO 3166-1 alpha-2 country codes used by OpenStreetMap Nominatim when the
+# active provider is CERRA.  Restricting the geocoder to European countries
+# avoids equally named places elsewhere while preserving cross-border search.
+EUROPE_COUNTRY_CODES = (
+    "al", "ad", "at", "by", "be", "ba", "bg", "hr", "cy", "cz",
+    "dk", "ee", "fi", "fr", "de", "gr", "hu", "is", "ie", "it",
+    "xk", "lv", "li", "lt", "lu", "mt", "md", "mc", "me", "nl",
+    "mk", "no", "pl", "pt", "ro", "ru", "sm", "rs", "sk", "si",
+    "es", "se", "ch", "tr", "ua", "gb", "va", "fo", "gi", "gg",
+    "im", "je",
+)
+
 HOUR_OPTIONS = [(f"{hour:02d}:00 UTC", hour) for hour in range(24)]
 
-HOSTRADA_POINT_UI_API_VERSION = "2.0-csv-export"
+HOSTRADA_POINT_UI_API_VERSION = "2.2-resilient-geocoder"
+
+PHOTON_SEARCH_URL = os.getenv(
+    "HOSTRADA_PHOTON_SEARCH_URL", "https://photon.komoot.io/api/"
+).strip()
+NOMINATIM_SEARCH_URL = os.getenv(
+    "HOSTRADA_NOMINATIM_SEARCH_URL",
+    "https://nominatim.openstreetmap.org/search",
+).strip()
+GEOCODER_ORDER = tuple(
+    item.strip().lower()
+    for item in os.getenv("HOSTRADA_GEOCODER_ORDER", "photon,nominatim").split(",")
+    if item.strip()
+)
+GEOCODER_MIN_INTERVAL_SECONDS = max(
+    1.05, float(os.getenv("HOSTRADA_GEOCODER_MIN_INTERVAL_SECONDS", "1.1"))
+)
+GEOCODER_RATE_LIMIT_COOLDOWN_SECONDS = max(
+    30.0, float(os.getenv("HOSTRADA_GEOCODER_RATE_LIMIT_COOLDOWN_SECONDS", "60"))
+)
+GEOCODER_USER_AGENT = os.getenv(
+    "HOSTRADA_GEOCODER_USER_AGENT",
+    "hostrada4py/0.42 interactive-address-search",
+).strip()
+
+
+class GeocoderRateLimited(RuntimeError):
+    """Raised when a public geocoder asks the client to slow down."""
+
+
+class GeocoderUnavailable(RuntimeError):
+    """Raised when all configured geocoders failed."""
 
 
 class HostradaPointUI:
@@ -68,6 +115,9 @@ class HostradaPointUI:
         self.namespace = namespace
         self.extractor = extractor
         self._geocode_results: list[dict[str, Any]] = []
+        self._geocode_cache: dict[tuple[str, str], tuple[list[dict[str, Any]], str]] = {}
+        self._last_geocoder_request_at = 0.0
+        self._geocoder_cooldown_until: dict[str, float] = {}
         self._updating_marker = False
         self._updating_output_filename = False
         self._custom_output_filename = initial_output_filename is not None
@@ -169,6 +219,67 @@ class HostradaPointUI:
             <= GERMANY_BOUNDS["lon_max"]
         )
 
+    def _inside_provider_domain(self, latitude: float, longitude: float) -> bool:
+        """Preserve the DWD Germany guard; allow the CERRA European domain."""
+        if hs.get_provider_name() == "dwd":
+            return self._inside_germany(latitude, longitude)
+        return 20.0 <= float(latitude) <= 80.0 and -45.0 <= float(longitude) <= 75.0
+
+    @staticmethod
+    def _provider_name() -> str:
+        return hs.get_provider_name()
+
+    def _location_scope_label(self) -> str:
+        return "Europe" if self._provider_name() == "cerra" else "Germany"
+
+    def _location_scope_description(self) -> str:
+        if self._provider_name() == "cerra":
+            return "the European CERRA domain"
+        return "Germany"
+
+    def _geocoder_countrycodes(self) -> str:
+        if self._provider_name() == "cerra":
+            return ",".join(EUROPE_COUNTRY_CODES)
+        return "de"
+
+    def _reset_address_results(self, message: str = "Search for an address first") -> None:
+        """Reset stale geocoder state before a new query or provider change.
+
+        The dropdown value must pass through ``None`` between searches.  Without
+        this reset, two consecutive searches whose first result both use index
+        0 do not emit a value-change event, so the second address is not applied.
+        """
+        self._geocode_results = []
+        self.address_results.disabled = True
+        self.address_results.options = [(message, None)]
+        self.address_results.value = None
+
+    def refresh_provider_scope(self) -> None:
+        """Refresh address-search guidance after the notebook changes provider."""
+        scope = self._location_scope_label()
+        if hasattr(self, "address_results"):
+            self._reset_address_results(
+                f"Search for an address in {scope}"
+            )
+        self.address_status.value = (
+            f"Enter an address in <b>{scope}</b> and click "
+            "<b>Search address</b>, or click directly on the map. "
+            "The marker can also be dragged."
+        )
+        if hasattr(self, "address_scope_note"):
+            self.address_scope_note.value = (
+                "<small>Address search uses OpenStreetMap data via Photon "
+                "with Nominatim as a fallback. Requests are cached and rate-limited. "
+                f"The selected point is restricted to {html.escape(self._location_scope_description())}."
+                "</small>"
+            )
+        if not self._inside_provider_domain(self.lat, self.lon):
+            self.address_status.value += (
+                "<br><span style='color:#b00020'><b>The currently selected "
+                f"point is outside {html.escape(self._location_scope_description())}. "
+                "Choose a new address or map location before downloading.</b></span>"
+            )
+
     @staticmethod
     def _format_utc(selected_date: Any, selected_hour: int) -> str:
         return f"{selected_date:%Y-%m-%d}T{int(selected_hour):02d}:00"
@@ -202,12 +313,7 @@ class HostradaPointUI:
             style={"description_width": "initial"},
             layout=widgets.Layout(width="875px"),
         )
-        self.address_status = widgets.HTML(
-            value=(
-                "Enter an address in Germany and click <b>Search address</b>, "
-                "or click directly on the map. The marker can also be dragged."
-            )
-        )
+        self.address_status = widgets.HTML()
         self.location_status = widgets.HTML()
 
         self.location_map = Map(
@@ -226,6 +332,7 @@ class HostradaPointUI:
             self.location_map.add(self.location_marker)
         except (AttributeError, TypeError):
             self.location_map.add_layer(self.location_marker)
+        self.refresh_provider_scope()
 
     def _refresh_location_status(self, source: str | None = None) -> None:
         source_text = f" &nbsp; <b>Source:</b> {html.escape(source)}" if source else ""
@@ -245,10 +352,11 @@ class HostradaPointUI:
     ) -> bool:
         latitude = float(latitude)
         longitude = float(longitude)
-        if not self._inside_germany(latitude, longitude):
+        if not self._inside_provider_domain(latitude, longitude):
+            scope = html.escape(self._location_scope_description())
             self.address_status.value = (
                 "<span style='color:#b00020'><b>The selected point is outside "
-                "Germany. Please choose a location within Germany.</b></span>"
+                f"{scope}. Please choose a location within {scope}.</b></span>"
             )
             return False
 
@@ -272,6 +380,218 @@ class HostradaPointUI:
         self._refresh_location_status(source)
         return True
 
+    @staticmethod
+    def _normalise_geocode_query(query: str) -> str:
+        return " ".join(query.casefold().split())
+
+    def _geocoder_headers(self) -> dict[str, str]:
+        return {
+            "User-Agent": GEOCODER_USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Language": "de,en;q=0.8",
+        }
+
+    def _wait_for_geocoder_slot(self) -> None:
+        elapsed = time.monotonic() - self._last_geocoder_request_at
+        delay = GEOCODER_MIN_INTERVAL_SECONDS - elapsed
+        if delay > 0:
+            time.sleep(delay)
+
+    def _request_geocoder_json(
+        self,
+        service: str,
+        url: str,
+        *,
+        params: Any,
+    ) -> Any:
+        now = time.monotonic()
+        cooldown_until = self._geocoder_cooldown_until.get(service, 0.0)
+        if now < cooldown_until:
+            seconds = max(1, int(round(cooldown_until - now)))
+            raise GeocoderRateLimited(
+                f"{service} is temporarily rate-limited; retry in about {seconds} s"
+            )
+
+        self._wait_for_geocoder_slot()
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=self._geocoder_headers(),
+                timeout=20,
+            )
+        finally:
+            self._last_geocoder_request_at = time.monotonic()
+
+        status_code = int(getattr(response, "status_code", 200))
+        if status_code == 429:
+            retry_after = None
+            headers = getattr(response, "headers", {}) or {}
+            try:
+                retry_after = float(headers.get("Retry-After", ""))
+            except (TypeError, ValueError):
+                retry_after = None
+            cooldown = max(
+                GEOCODER_RATE_LIMIT_COOLDOWN_SECONDS,
+                retry_after or 0.0,
+            )
+            self._geocoder_cooldown_until[service] = time.monotonic() + cooldown
+            raise GeocoderRateLimited(
+                f"{service} returned HTTP 429 and is paused for {int(cooldown)} s"
+            )
+
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _photon_label(properties: dict[str, Any], fallback: str) -> str:
+        parts: list[str] = []
+
+        def add(value: Any) -> None:
+            text = str(value or "").strip()
+            if text and text.casefold() not in {part.casefold() for part in parts}:
+                parts.append(text)
+
+        name = properties.get("name")
+        street = properties.get("street")
+        house_number = properties.get("housenumber")
+        if name:
+            add(name)
+        if street:
+            add(f"{street} {house_number}".strip())
+        elif house_number:
+            add(house_number)
+
+        locality = properties.get("city") or properties.get("town") or properties.get("village")
+        postcode = properties.get("postcode")
+        if postcode or locality:
+            add(" ".join(str(value) for value in (postcode, locality) if value).strip())
+
+        for key in ("district", "county", "state", "country"):
+            add(properties.get(key))
+        return ", ".join(parts) or fallback
+
+    def _search_photon(self, query: str) -> list[dict[str, Any]]:
+        params: list[tuple[str, Any]] = [
+            ("q", query),
+            ("limit", 12),
+            ("lang", "de"),
+        ]
+        if self._provider_name() == "dwd":
+            params.extend(
+                [
+                    ("countrycode", "DE"),
+                    (
+                        "bbox",
+                        f"{GERMANY_BOUNDS['lon_min']},{GERMANY_BOUNDS['lat_min']},"
+                        f"{GERMANY_BOUNDS['lon_max']},{GERMANY_BOUNDS['lat_max']}",
+                    ),
+                ]
+            )
+        else:
+            params.append(("bbox", "-45,20,75,80"))
+
+        payload = self._request_geocoder_json(
+            "Photon", PHOTON_SEARCH_URL, params=params
+        )
+        features = payload.get("features", []) if isinstance(payload, dict) else []
+        allowed_countries = set(EUROPE_COUNTRY_CODES)
+        results: list[dict[str, Any]] = []
+        for feature in features:
+            try:
+                properties = feature.get("properties", {}) or {}
+                coordinates = feature["geometry"]["coordinates"]
+                longitude = float(coordinates[0])
+                latitude = float(coordinates[1])
+                country_code = str(properties.get("countrycode", "")).lower()
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            if self._provider_name() == "dwd" and country_code not in {"", "de"}:
+                continue
+            if (
+                self._provider_name() == "cerra"
+                and country_code
+                and country_code not in allowed_countries
+            ):
+                continue
+            if not self._inside_provider_domain(latitude, longitude):
+                continue
+            results.append(
+                {
+                    "lat": latitude,
+                    "lon": longitude,
+                    "label": self._photon_label(properties, query),
+                }
+            )
+            if len(results) >= 8:
+                break
+        return results
+
+    def _search_nominatim(self, query: str) -> list[dict[str, Any]]:
+        payload = self._request_geocoder_json(
+            "Nominatim",
+            NOMINATIM_SEARCH_URL,
+            params={
+                "q": query,
+                "format": "jsonv2",
+                "addressdetails": 1,
+                "countrycodes": self._geocoder_countrycodes(),
+                "limit": 8,
+            },
+        )
+        if not isinstance(payload, list):
+            return []
+        results: list[dict[str, Any]] = []
+        for item in payload:
+            try:
+                latitude = float(item["lat"])
+                longitude = float(item["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not self._inside_provider_domain(latitude, longitude):
+                continue
+            results.append(
+                {
+                    "lat": latitude,
+                    "lon": longitude,
+                    "label": item.get("display_name", query),
+                }
+            )
+        return results
+
+    def _geocode_address(
+        self, query: str
+    ) -> tuple[list[dict[str, Any]], str, bool]:
+        cache_key = (self._provider_name(), self._normalise_geocode_query(query))
+        cached = self._geocode_cache.get(cache_key)
+        if cached is not None:
+            results, service = cached
+            return [dict(item) for item in results], service, True
+
+        errors: list[str] = []
+        searchers = {
+            "photon": ("Photon", self._search_photon),
+            "nominatim": ("Nominatim", self._search_nominatim),
+        }
+        for configured_name in GEOCODER_ORDER:
+            entry = searchers.get(configured_name)
+            if entry is None:
+                continue
+            service, searcher = entry
+            try:
+                results = searcher(query)
+            except (GeocoderRateLimited, requests.RequestException, ValueError) as exc:
+                errors.append(f"{service}: {exc}")
+                continue
+            if results:
+                self._geocode_cache[cache_key] = ([dict(item) for item in results], service)
+                return results, service, False
+
+        if errors:
+            raise GeocoderUnavailable("; ".join(errors))
+        self._geocode_cache[cache_key] = ([], "")
+        return [], "", False
+
     def _search_address(self, _button: Any = None) -> None:
         query = self.address_input.value.strip()
         if not query:
@@ -280,49 +600,29 @@ class HostradaPointUI:
             )
             return
 
+        # Clear the previous dropdown selection before issuing the request.
+        # This guarantees that selecting result index 0 fires again on every
+        # search, including two consecutive searches with a first result.
+        self._reset_address_results("Searching …")
         self.address_search_button.disabled = True
         self.address_search_button.description = "Searching …"
-        self.address_status.value = "Searching the address in OpenStreetMap Nominatim …"
+        scope = self._location_scope_label()
+        self.address_status.value = (
+            f"Searching the address in {html.escape(scope)} using an "
+            "OpenStreetMap address service …"
+        )
 
         try:
-            response = requests.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={
-                    "q": query,
-                    "format": "jsonv2",
-                    "addressdetails": 1,
-                    "countrycodes": "de",
-                    "limit": 8,
-                },
-                headers={
-                    "User-Agent": (
-                        "hostrada4py-jupyter/1.0 "
-                        "(interactive climate location selector)"
-                    )
-                },
-                timeout=20,
-            )
-            response.raise_for_status()
-            raw_results = response.json()
-
-            self._geocode_results = [
-                {
-                    "lat": float(item["lat"]),
-                    "lon": float(item["lon"]),
-                    "label": item.get("display_name", query),
-                }
-                for item in raw_results
-                if self._inside_germany(item["lat"], item["lon"])
-            ]
+            self._geocode_results, geocoder_name, from_cache = self._geocode_address(query)
 
             if not self._geocode_results:
                 self.address_results.options = [("No matching address found", None)]
                 self.address_results.value = None
                 self.address_results.disabled = True
                 self.address_status.value = (
-                    "<span style='color:#b00020'><b>No matching address in Germany "
-                    "was found. Refine the address or choose the point on the map."
-                    "</b></span>"
+                    "<span style='color:#b00020'><b>No matching address in "
+                    f"{html.escape(scope)} was found. Refine the address or choose "
+                    "the point on the map.</b></span>"
                 )
                 return
 
@@ -333,21 +633,28 @@ class HostradaPointUI:
                     label = label[:117] + "…"
                 result_options.append((label, index))
 
+            self.address_results.options = [
+                ("Select an address result", None),
+                *result_options,
+            ]
+            self.address_results.value = None
             self.address_results.disabled = False
-            self.address_results.options = result_options
             self.address_results.value = 0
+            cache_note = " (cache)" if from_cache else ""
             self.address_status.value = (
-                f"<b>{len(self._geocode_results)} result(s) found.</b> "
+                f"<b>{len(self._geocode_results)} result(s) found via "
+                f"{html.escape(geocoder_name)}{cache_note}.</b> "
                 "Select the desired address from the list."
             )
-        except requests.RequestException as exc:
-            self.address_results.options = [("Address search unavailable", None)]
+        except GeocoderUnavailable as exc:
+            self.address_results.options = [("Address search temporarily unavailable", None)]
             self.address_results.value = None
             self.address_results.disabled = True
             self.address_status.value = (
-                "<span style='color:#b00020'><b>Address search failed:</b> "
-                f"{html.escape(str(exc))}. You can still select the location on "
-                "the map.</span>"
+                "<span style='color:#b00020'><b>Address search is temporarily "
+                "unavailable.</b> The public geocoding services rejected or could "
+                f"not answer the request ({html.escape(str(exc))}). Wait before "
+                "trying again, or select the location on the map.</span>"
             )
         except (TypeError, ValueError, KeyError) as exc:
             self.address_status.value = (
@@ -397,7 +704,7 @@ class HostradaPointUI:
         if not new_location or len(new_location) < 2:
             return
         latitude, longitude = new_location[:2]
-        if self._inside_germany(latitude, longitude):
+        if self._inside_provider_domain(latitude, longitude):
             self.namespace.update(
                 {
                     "lat": float(latitude),
@@ -417,7 +724,7 @@ class HostradaPointUI:
             )
             self.address_status.value = (
                 "<span style='color:#b00020'><b>The marker must remain within "
-                "Germany.</b></span>"
+                f"{html.escape(self._location_scope_description())}.</b></span>"
             )
 
     # ------------------------------------------------------------------
@@ -630,6 +937,12 @@ class HostradaPointUI:
     # ------------------------------------------------------------------
     def _connect_callbacks(self) -> None:
         self.address_search_button.on_click(self._search_address)
+        # ipywidgets 7/8 exposes on_submit on Text (deprecated in some releases
+        # but still functional).  Keep button search as the primary path and
+        # support Enter where available.
+        on_submit = getattr(self.address_input, "on_submit", None)
+        if callable(on_submit):
+            on_submit(self._search_address)
         self.address_results.observe(self._select_address_result, names="value")
         self.location_map.on_interaction(self._select_location_on_map)
         self.location_marker.observe(self._marker_location_changed, names="location")
@@ -655,6 +968,8 @@ class HostradaPointUI:
             control.observe(self._update_period, names="value")
 
     def _build_layout(self) -> None:
+        self.address_scope_note = widgets.HTML()
+        self.refresh_provider_scope()
         self.location_box = widgets.VBox(
             [
                 widgets.HTML("<h3>1. Select climate location</h3>"),
@@ -663,10 +978,7 @@ class HostradaPointUI:
                 self.address_status,
                 self.location_status,
                 self.location_map,
-                widgets.HTML(
-                    "<small>Address search uses OpenStreetMap Nominatim. "
-                    "The selected point is restricted to Germany.</small>"
-                ),
+                self.address_scope_note,
             ]
         )
         self.period_box = widgets.VBox(
@@ -703,6 +1015,7 @@ class HostradaPointUI:
             "address_search_button",
             "address_results",
             "address_status",
+            "address_scope_note",
             "location_status",
             "location_map",
             "location_marker",
@@ -722,6 +1035,10 @@ class HostradaPointUI:
             "download_box",
         )
         self.namespace.update({name: getattr(self, name) for name in names})
+
+    def show(self) -> None:
+        """Additive convenience alias; the upstream notebook uses ``display(ui.widget)``."""
+        display(self.widget)
 
 
 def create_hostrada_point_ui(

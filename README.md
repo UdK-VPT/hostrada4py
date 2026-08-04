@@ -1,5 +1,5 @@
 # hostrada4py
-hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data from the DWD (Deutscher Wetterdienst).
+hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data for Germany from the DWD (Deutscher Wetterdienst) and CERRA weather data for the EU from Copernicus.
 
 ![Berlin_UHI_HOSTRADA](https://github.com/UdK-VPT/hostrada4py/blob/main/img/Berlin_UHI_HOSTRADA.png)
 
@@ -29,8 +29,15 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 * Global radiation,
 * Urban Heat Island Intensity (UHI).
 
+## The CERRA project
+CERRA (Copernicus European Regional ReAnalysis) provides consistent historical reconstructions of atmospheric, surface, and soil conditions across Europe. (https://climate.copernicus.eu/copernicus-regional-reanalysis-europe-cerra)
+It combines observations with numerical weather models to produce high-resolution data, including a 5.5-km atmospheric dataset with a time resolution of 3 hours, an ensemble dataset for uncertainty estimates, and the CERRA-Land product. Available through the Copernicus Climate Data Store, CERRA supports climate monitoring, research, impact studies, and adaptation planning (https://cds.climate.copernicus.eu/datasets/reanalysis-cerra-single-levels).
+
+The CERRA data set is also expanded monthly and can deliver the same weather data as HOSTRADA except Urban Heat Island Intensity (UHI) since 1984.
+
 ## The Python library hostrada4py
-The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA weather data. **hostrada.py** contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in **hostradaPoint.py** support the evaluation of weather data at a climate location specified by longitude and latitude, whereas **hostradaArea.py** provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
+
+The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA and CERRA weather data. **hostrada.py** contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in **hostradaPoint.py** support the evaluation of weather data at a climate location specified by longitude and latitude, whereas **hostradaArea.py** provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
 
 For the largest 50 German cities and a couple of regions polygons are predefined in the files **hostrada4py/hostradaCities.py** and **hostrada4py/hostradaRegions.py**.
 
@@ -42,7 +49,7 @@ The notebooks
 * **hostradaRoute.ipynb** (calculation of HOSTRADA values along a predefined route),
 * **hostradaArea.ipynb** (2D fields of weather data),
 * **hostradaAreaMean.ipynb** (mean values of 2D fields of weather data),
-* **hostradaHeatPeriods.ipynb** (shows the locations with the most intensive heat periods in Germany within 1995 to 2026) and
+* **hostradaHeatPeriods.ipynb** (shows the locations with the most intensive heat periods in Germany (HOSTRADA, within 1995 to 2026) and in the EU region (CERRA, 1984 zo 2026),
 * **hostradaHeatingDegreeDays.ipynb** (calculation of heating degree days based of HOSTRADA values for one location) and
 * **hostradaGenerateWeatherFiles.ipynb** (generation of weather data files based of HOSTRADA values for one location for different simulation programs - IDA ICE, Polysun, EnergyPlus, SimStadt and the Modelica library BuildingSystems). 
 
@@ -50,7 +57,7 @@ illustrate the use of the Python functions of hostrada4py.
 
 
 ## Diffuse horizontal irradiance (DHI)
-The HOSTRADA dataset contains values for total radiation, but not for the diffuse radiation included in it.
+The HOSTRADA and CERRA datasets contain values for total radiation, but not for the diffuse radiation included in it.
 
 A robust DHI estimate can be calculated directly from HOSTRADA point data with `pvlib` and the `erbs_driesse` decomposition model. The function `extract_diffuse_radiation_for_point` downloads the required HOSTRADA variables for a point, combines them, computes the solar position from time, longitude, and latitude, and returns `dhi`, `dni`, and `kd`.
 

@@ -5,15 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hostrada4py"
 version = "0.42.0"
-description = "Python access and evaluation tools for DWD HOSTRADA weather data"
+description = "HOSTRADA 0.42.0"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
-dynamic = ["dependencies"]
+license = {text = "MIT"}
+authors = [{name = "UdK-VPT; provider refactor integration"}]
+dependencies = [
+ "numpy", "pandas", "requests", "xarray", "netcdf4", "pyproj", "shapely", "geopandas",
+ "branca", "folium", "ipython", "ipywidgets", "ipyleaflet", "matplotlib", "seaborn", "plotly",
+ "pvlib", "fsspec", "h5netcdf"
+]
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+[project.optional-dependencies]
+cerra = ["cdsapi>=0.7.7", "cfgrib>=0.9.15", "eccodes>=2.38", "scipy>=1.10"]
+test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
-where = ["."]
 include = ["hostrada4py*"]
+
+[tool.setuptools.package-data]
+hostrada4py = ["notebooks/*.ipynb", "cerra_credentials.ini"]
