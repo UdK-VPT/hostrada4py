@@ -1,5 +1,7 @@
 # hostrada4py
-hostrada4Py is a Python library with access and for evaluation of the HOSTRADA weather data for Germany from the DWD (Deutscher Wetterdienst) and CERRA weather data for the EU from Copernicus.
+hostrada4Py is an Open Source Python library with access to and evaluation of the HOSTRADA weather data for Germany from the DWD (Deutscher Wetterdienst) and CERRA weather data for the EU from Copernicus.
+
+[hostrada4py](https://udk-vpt.github.io/hostrada4py/index.html) is developed by the Chair of Building Services Engineering [VPT](https://www.udk-berlin.de/studium/architektur/fachgebiete/versorgungsplanung-und-versorgungstechnik/) at Berlin University of the Arts.
 
 ![Berlin_UHI_HOSTRADA](https://github.com/UdK-VPT/hostrada4py/blob/main/img/Berlin_UHI_HOSTRADA.png)
 
@@ -49,7 +51,7 @@ The notebooks
 * **hostradaRoute.ipynb** (calculation of HOSTRADA values along a predefined route),
 * **hostradaArea.ipynb** (2D fields of weather data),
 * **hostradaAreaMean.ipynb** (mean values of 2D fields of weather data),
-* **hostradaHeatPeriods.ipynb** (shows the locations with the most intensive heat periods in Germany (HOSTRADA, within 1995 to 2026) and in the EU region (CERRA, 1984 zo 2026),
+* **hostradaHeatPeriods.ipynb** (shows the locations with the most intensive heat periods in Germany (HOSTRADA, within 1995 to 2026) and in the EU region (CERRA, 1984 to 2026)),
 * **hostradaHeatingDegreeDays.ipynb** (calculation of heating degree days based of HOSTRADA values for one location) and
 * **hostradaGenerateWeatherFiles.ipynb** (generation of weather data files based of HOSTRADA values for one location for different simulation programs - IDA ICE, Polysun, EnergyPlus, SimStadt and the Modelica library BuildingSystems). 
 
