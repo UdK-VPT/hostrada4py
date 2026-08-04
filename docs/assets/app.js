@@ -3,14 +3,14 @@
   const buttons = [...document.querySelectorAll('[data-set-language]')];
   const metadata = {
     de: {
-      title: 'hostrada4py — HOSTRADA-Klimadaten für Python',
-      description: 'hostrada4py erschließt die hochaufgelösten stündlichen HOSTRADA-Klimadaten des Deutschen Wetterdienstes für Python-Workflows, Karten und Simulationen.',
-      imageAlt: 'HOSTRADA-Karte der städtischen Wärmeinselintensität in Berlin'
+      title: 'hostrada4py — HOSTRADA- und CERRA-Klimadaten für Python',
+      description: 'hostrada4py erschließt HOSTRADA- und CERRA-Klimadaten für Zeitreihen, Klimakarten, Routing und Simulationen in Deutschland und Europa.',
+      imageAlt: 'HOSTRADA-Darstellung der Übertemperatur im Stadtgebiet Berlin am 2. August 2025 um 03:00 Uhr'
     },
     en: {
-      title: 'hostrada4py — HOSTRADA climate data for Python',
-      description: 'hostrada4py makes the German Weather Service’s high-resolution hourly HOSTRADA climate data accessible for Python workflows, maps and simulations.',
-      imageAlt: 'HOSTRADA map of urban heat island intensity in Berlin'
+      title: 'hostrada4py — HOSTRADA and CERRA climate data for Python',
+      description: 'hostrada4py provides Python access to HOSTRADA and CERRA data for time series, climate maps, routing and simulations across Germany and Europe.',
+      imageAlt: 'HOSTRADA map of temperature excess across Berlin on 2 August 2025 at 3:00 a.m.'
     }
   };
 
@@ -22,6 +22,9 @@
     document.querySelector('meta[name="description"]').setAttribute('content', metadata[language].description);
     const heroImage = document.querySelector('.image-card img');
     if (heroImage) heroImage.alt = metadata[language].imageAlt;
+    document.querySelectorAll('[data-alt-de][data-alt-en]').forEach((image) => {
+      image.alt = image.dataset[language === 'de' ? 'altDe' : 'altEn'];
+    });
     buttons.forEach((button) => {
       button.setAttribute('aria-pressed', String(button.dataset.setLanguage === language));
     });
