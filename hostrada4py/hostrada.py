@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Backwards-compatible data-access facade for hostrada4py.
 
-The original public functions remain available. DWD-specific URL/file/cache
+DWD-specific URL/file/cache
 logic lives in :mod:`hostrada4py.providers.dwd_hostrada`; CERRA access lives in
 :mod:`hostrada4py.providers.cerra`. Existing notebooks continue to use DWD by
 default and can switch providers through ``HOSTRADA_PROVIDER=cerra`` or the
