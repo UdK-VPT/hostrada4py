@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """HOSTRADA/CERRA climate profile along a time-defined route.
 
-The public API and output schema are compatible with hostrada4py 0.42.0.
-Provider selection is additive: DWD/HOSTRADA remains the default; CERRA can be
+The default provider selection is DWD/HOSTRADA; CERRA can be
 selected globally or with the optional ``provider`` argument.
 """
 from __future__ import annotations
