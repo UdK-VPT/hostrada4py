@@ -37,6 +37,8 @@ It combines observations with numerical weather models to produce high-resolutio
 
 The CERRA data set is also expanded monthly and can deliver the same weather data as HOSTRADA except Urban Heat Island Intensity (UHI) since 1984.
 
+To access CERRA weather data, you need an API key, which you receive after registering and must store in a configuration file (see https://cds.climate.copernicus.eu/how-to-api).
+
 ## The Python library hostrada4py
 
 The folder hostrada4py includes some Python files which simplifies the access to HOSTRADA and CERRA weather data. **hostrada.py** contains functions for downloading the desired NetCFD files from the DWD server. The functions contained in **hostradaPoint.py** support the evaluation of weather data at a climate location specified by longitude and latitude, whereas **hostradaArea.py** provides functions that enable the evaluation of weather data in a grid with a resolution of 1km x 1km, which is defined by a polygon.
