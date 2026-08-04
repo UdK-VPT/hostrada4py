@@ -1,8 +1,6 @@
 """Polygon and area evaluation for HOSTRADA and provider-normalised grids.
 
-The public API and result schema follow hostrada4py 0.42.0.  Provider-specific
-file acquisition stays in :mod:`hostrada4py.hostrada`; this module only
-contains grid selection, statistics and visualisation logic.
+This module only contains grid selection, statistics and visualisation logic.
 """
 from __future__ import annotations
 
