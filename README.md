@@ -32,7 +32,7 @@ The HOSTRADA data set is expanded monthly and contains the following variables:
 * Urban Heat Island Intensity (UHI).
 
 ## The CERRA project
-CERRA (Copernicus European Regional ReAnalysis) provides consistent historical reconstructions of atmospheric, surface, and soil conditions across Europe. (https://climate.copernicus.eu/copernicus-regional-reanalysis-europe-cerra)
+CERRA (Copernicus European Regional ReAnalysis) provides consistent historical reconstructions of atmospheric, surface, and soil conditions across Europe. (https://climate.copernicus.eu/copernicus-regional-reanalysis-europe-cerra).
 It combines observations with numerical weather models to produce high-resolution data, including a 5.5-km atmospheric dataset with a time resolution of 3 hours, an ensemble dataset for uncertainty estimates, and the CERRA-Land product. Available through the Copernicus Climate Data Store, CERRA supports climate monitoring, research, impact studies, and adaptation planning (https://cds.climate.copernicus.eu/datasets/reanalysis-cerra-single-levels).
 
 The CERRA data set is also expanded monthly and can deliver the same weather data as HOSTRADA except Urban Heat Island Intensity (UHI) since 1984.
