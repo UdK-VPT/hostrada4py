@@ -288,6 +288,9 @@ def _extraterrestrial_radiation(df, times_utc):
     zenith = _num(df, "solar_zenith", 180.0)
     etr = etrn * np.maximum(np.cos(np.deg2rad(zenith)), 0.0)
     etr = np.where(zenith < 90.0, etr, 0.0)
+    # ETRN is the normal irradiance on a surface perpendicular to the sun.
+    # It is physically 0 when the sun is below the horizon.
+    etrn = np.where(zenith < 90.0, etrn, 0.0)
     return np.rint(np.clip(etr, 0.0, None)), np.rint(np.clip(etrn, 0.0, None))
 
 
@@ -496,11 +499,17 @@ def create_simstadt_weather_file(
         "clt",
     ]
 
+    # Extend the fetch window by one extra day so that UTC timestamps that map
+    # to the last local-time hours of the requested year are not cut off.
+    # Example: for UTC+1, "2023-12-31 23:00 local" = "2023-12-31 22:00 UTC".
+    # If the API stops at "2023-12-31 00:00 UTC" we lose the last 23 hours.
+    end_extended = (pd.Timestamp(end) + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+
     df = weather_dataframe(
         lon,
         lat,
         start,
-        end,
+        end_extended,
         required,
         tz=tz,
         altitude=altitude,
@@ -511,6 +520,14 @@ def create_simstadt_weather_file(
         provider=provider,
         verbose=verbose,
     )
+
+    # Trim the dataframe to the originally requested date range in local standard
+    # time so the output file contains exactly the hours of the requested period.
+    local_times, _off = _local_standard_times(df, tz)
+    start_local = pd.Timestamp(start, tz=local_times.tz)
+    end_local   = pd.Timestamp(end, tz=local_times.tz) + pd.Timedelta(days=1)
+    mask = (local_times >= start_local) & (local_times < end_local)
+    df = df.iloc[mask.to_numpy()].reset_index(drop=True)
 
     metadata, rows = _build_tmy3_rows(
         df,
