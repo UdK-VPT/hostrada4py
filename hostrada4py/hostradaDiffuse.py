@@ -26,11 +26,27 @@ def combine_point_variables(frames) -> pd.DataFrame:
     return result.drop_duplicates("time").sort_values("time").reset_index(drop=True)
 
 
+# Offset from the timestamp to the midpoint of the averaging interval of the
+# hourly irradiance. HOSTRADA rsds is labelled at the END of the hour it
+# averages (the diurnal centroid lies ~30 min after solar noon, although the
+# file's time_bnds claim [t, t+1h]); CERRA de-accumulated rsds is labelled at
+# its forecast valid time, i.e. also the end of the hour.
+_INTERVAL_MIDPOINT_OFFSET = {
+    "end": pd.Timedelta(minutes=-30),
+    "center": pd.Timedelta(0),
+    "start": pd.Timedelta(minutes=30),
+}
+
+
 class HostradaDiffuse:
     def __init__(self, latitude: float, longitude: float, altitude: float = 0.0,
-                 tz: str = "UTC", method: str = "erbs_driesse"):
+                 tz: str = "UTC", method: str = "erbs_driesse",
+                 timestamp_label: str = "end"):
+        if timestamp_label not in _INTERVAL_MIDPOINT_OFFSET:
+            raise ValueError(f"timestamp_label must be one of {sorted(_INTERVAL_MIDPOINT_OFFSET)}.")
         self.latitude, self.longitude = float(latitude), float(longitude)
         self.altitude, self.tz, self.method = float(altitude), str(tz), str(method)
+        self.timestamp_label = timestamp_label
 
     def estimate(self, data: pd.DataFrame, ghi_column: str = "rsds",
                  apply_weather_correction: bool = False) -> pd.DataFrame:
@@ -40,7 +56,10 @@ class HostradaDiffuse:
         times = pd.DatetimeIndex(pd.to_datetime(out["time"]))
         if times.tz is None:
             times = times.tz_localize("UTC")
-        local_times = times.tz_convert(self.tz)
+        # Solar position at the midpoint of the averaging interval; using the
+        # timestamp itself gives near-horizon zenith angles for hours that
+        # still carry irradiance and hence unrealistic DNI peaks.
+        local_times = (times + _INTERVAL_MIDPOINT_OFFSET[self.timestamp_label]).tz_convert(self.tz)
         ghi = pd.to_numeric(out[ghi_column], errors="coerce").fillna(0.0).clip(lower=0.0)
         try:
             import pvlib
