@@ -4,11 +4,21 @@
 
 Creates the normal HOSTRADA_IDA_ICE.prn weather file and, in addition,
 a matching HOSTRADA_IDA_ICE.idm location-description file.
+
+The .prn file uses the headerless IDA ICE weather format with seven
+whitespace-separated numeric columns (as in the IDA ICE example files):
+
+    hour of year, dry-bulb temperature [degC], relative humidity [%],
+    wind direction [deg], wind speed [m/s],
+    direct normal radiation [W/m2], diffuse horizontal radiation [W/m2]
+
+The hour of year counts continuously from 1 January 00:00 local standard
+time (no daylight saving time); the time zone is written to the .idm file.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -48,14 +58,71 @@ def _ensure_target(output_file, default_name):
     return path
 
 
-def _local_time(df, tz):
+PRN_COLUMNS = [
+    "tas",
+    "hurs",
+    "sfcWind_direction",
+    "sfcWind",
+    "dni",
+    "dhi",
+]
+
+
+def _local_standard_time(df, tz, reference_date=None):
+    """Return the data timestamps in local standard time (fixed offset, no DST)."""
     if "time" not in df.columns:
         raise KeyError("Weather dataframe contains no 'time' column.")
 
     times = pd.DatetimeIndex(pd.to_datetime(df["time"]))
     if times.tz is None:
         times = times.tz_localize("UTC")
-    return times.tz_convert(tz)
+    offset_hours = -_ida_time_zone_value(tz, reference_date)
+    return times.tz_convert(timezone(timedelta(hours=offset_hours)))
+
+
+def _prn_dataframe(df, tz, start, end):
+    """Build the seven IDA ICE .prn columns on a gap-free hourly grid.
+
+    The grid runs from ``start`` 00:00 to ``end`` + 1 day 00:00 in local
+    standard time (both included, like the IDA ICE example files). The hour
+    column counts from 1 January 00:00 of the start year.
+    """
+    missing = [c for c in PRN_COLUMNS if c not in df.columns]
+    if missing:
+        raise KeyError(f"Weather dataframe lacks columns required for IDA ICE: {missing}")
+
+    times = _local_standard_time(df, tz, reference_date=start)
+    data = df[PRN_COLUMNS].astype(float).set_axis(times)
+    data = data[~data.index.duplicated(keep="first")].sort_index()
+
+    start_local = pd.Timestamp(start).normalize().tz_localize(None).tz_localize(times.tz)
+    end_local = pd.Timestamp(end).normalize().tz_localize(None).tz_localize(times.tz) + pd.Timedelta(days=1)
+    grid = pd.date_range(start_local, end_local, freq="h")
+
+    data = data.reindex(data.index.union(grid))
+    direction = data["sfcWind_direction"].ffill().bfill()
+    data = data.interpolate(method="time", limit_direction="both")
+    data["sfcWind_direction"] = direction
+    data = data.reindex(grid)
+
+    data["hurs"] = data["hurs"].clip(0.0, 100.0)
+    for col in ("sfcWind", "dni", "dhi"):
+        data[col] = data[col].clip(lower=0.0)
+
+    year_start = start_local.replace(month=1, day=1)
+    hours = ((grid - year_start) / pd.Timedelta(hours=1)).round().astype(int)
+    data.insert(0, "hour", hours)
+    return data.reset_index(drop=True)
+
+
+def _write_prn(data, path):
+    """Write the headerless fixed-width IDA ICE .prn file (CRLF line ends)."""
+    lines = [
+        f"{int(row[0]):5d}" + "".join(f"{value:8.2f}" for value in row[1:])
+        for row in data.itertuples(index=False)
+    ]
+    with path.open("w", encoding="ascii", newline="") as handle:
+        handle.write("\r\n".join(lines) + "\r\n")
 
 
 def _weather_dataframe(
@@ -195,11 +262,16 @@ def create_ida_ice_weather_file(
     """Create the IDA ICE .prn file and matching HOSTRADA_IDA_ICE.idm file."""
     del kwargs  # accepted for backwards compatibility
 
+    # Fetch one extra day on both sides: the requested local-standard-time
+    # period starts/ends one hour off the UTC day boundary (e.g. UTC+1).
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    fetch_end = (pd.Timestamp(end) + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+
     df = _weather_dataframe(
         lon,
         lat,
-        start,
-        end,
+        fetch_start,
+        fetch_end,
         _required_vars(apply_weather_correction, provider=provider),
         tz=tz,
         altitude=altitude,
@@ -211,31 +283,8 @@ def create_ida_ice_weather_file(
         verbose=verbose,
     )
 
-    times = _local_time(df, tz)
-    out = df.copy()
-    out.insert(0, "Date", times.strftime("%Y-%m-%d"))
-    out.insert(1, "Time", times.strftime("%H:%M"))
-
-    cols = [
-        "Date",
-        "Time",
-        "tas",
-        "hurs",
-        "sfcWind",
-        "sfcWind_direction",
-        "rsds",
-        "dhi",
-        "dni",
-        "clt",
-        "ps",
-    ]
-
     prn_path = _ensure_target(output_file, "HOSTRADA_IDA_ICE.prn")
-    out[[c for c in cols if c in out.columns]].to_csv(
-        prn_path,
-        sep="\t",
-        index=False,
-    )
+    _write_prn(_prn_dataframe(df, tz, start, end), prn_path)
 
     if idm_file is None:
         idm_path = prn_path.with_name("HOSTRADA_IDA_ICE.idm")
