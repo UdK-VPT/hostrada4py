@@ -40,7 +40,8 @@ class HostradaDiffuse:
         times = pd.DatetimeIndex(pd.to_datetime(out["time"]))
         if times.tz is None:
             times = times.tz_localize("UTC")
-        local_times = times.tz_convert(self.tz)
+        # Irradiance is calculated for the last hour. On average, it's 30min too late
+        local_times = times.tz_convert(self.tz) - pd.Timedelta(minutes=30)
         ghi = pd.to_numeric(out[ghi_column], errors="coerce").fillna(0.0).clip(lower=0.0)
         try:
             import pvlib
